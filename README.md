@@ -2,7 +2,7 @@
 
 **A streaming-first PySpark ELT framework for Microsoft Fabric**
 
-ArcFlow, named after an electric arc (a continiuous discharge of electricity across two conductors), is a streaming-first PySpark data engineering framework designed for scalable and testable lakehouse architectures. It provides a flexible, zone-agnostic approach to building ELT pipelines with support for both single-source table processing and multi-source dimensional modeling.
+ArcFlow, named after an electrical arc (a continiuous discharge of electricity across two conductors), is a streaming-first PySpark data engineering framework designed for scalable and testable lakehouse architectures. It provides a flexible, zone-agnostic approach to building ELT pipelines with support for both single-source table processing and multi-source dimensional modeling.
 
 ArcFlow provides a means of rapidly moving and transforming data between zones of a lakehouse.
 

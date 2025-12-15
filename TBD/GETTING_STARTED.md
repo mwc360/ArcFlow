@@ -7,7 +7,7 @@ Your **Industrial Streaming PySpark module** is now ready for Microsoft Fabric d
 ### ✅ Project Structure
 
 ```
-demo-industrial-streaming/
+ArcFlow/
 ├── src/industrial_streaming/         # Your Python module
 │   ├── __init__.py
 │   ├── spark_job.py                  # Main Spark job (Fabric-ready)

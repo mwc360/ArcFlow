@@ -12,7 +12,7 @@ Get started with ArcFlow in 5 minutes!
 
 ```bash
 # Clone repository
-cd demo-industrial-streaming
+cd ArcFlow
 
 # Install dependencies
 uv sync

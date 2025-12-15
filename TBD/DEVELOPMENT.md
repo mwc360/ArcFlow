@@ -28,7 +28,7 @@ Since Fabric uses Linux-based Spark clusters with Python 3.11, your code will wo
 
 ```bash
 # In WSL2
-cd /mnt/c/Users/milescole/source/demo-industrial-streaming
+cd /mnt/c/Users/milescole/source/ArcFlow
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install pyspark==3.5.7
@@ -40,7 +40,7 @@ python test_spark_local.py
 Your project is now set up with:
 
 ```
-demo-industrial-streaming/
+ArcFlow/
 ├── src/
 │   └── industrial_streaming/
 │       ├── __init__.py           # Package initialization
