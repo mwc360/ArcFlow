@@ -77,16 +77,16 @@ spark.driver.memory: 8g
 Edit `pipeline_config.py` to define your tables:
 
 ```python
-def get_table_registry() -> Dict[str, SourceConfig]:
+def get_table_registry() -> Dict[str, FlowConfig]:
     tables = {}
     
-    tables['my_table'] = SourceConfig(
+    tables['my_table'] = FlowConfig(
         name='my_table',
         format='parquet',
         landing_path='Files/landing/my_table/',
         zones={
-            'bronze': ZoneConfig(enabled=True, mode='append'),
-            'silver': ZoneConfig(
+            'bronze': StageConfig(enabled=True, mode='append'),
+            'silver': StageConfig(
                 enabled=True,
                 mode='upsert',
                 merge_keys=['id']
@@ -120,7 +120,7 @@ def get_table_registry() -> Dict[str, SourceConfig]:
 ### arcflow wheel
 - Installed in Environment
 - Contains all framework code
-- Provides: Controller, SourceConfig, ZoneConfig, etc.
+- Provides: Controller, FlowConfig, StageConfig, etc.
 
 ## Configuration Options
 
@@ -173,14 +173,14 @@ return get_config({
 
 ### Adding New Tables
 1. Edit `pipeline_config.py` → `get_table_registry()`
-2. Add new `SourceConfig` entry
+2. Add new `FlowConfig` entry
 3. Upload updated file to Spark Job Definition
 4. Run job
 
 ### Adding Custom Transformations
 1. Edit `pipeline_config.py` → `register_custom_transformations()`
 2. Use `@register_zone_transformer` decorator
-3. Reference by name in `ZoneConfig`
+3. Reference by name in `StageConfig`
 4. Upload updated file
 5. Run job
 
@@ -240,13 +240,13 @@ SELECT * FROM gold.sensor_data LIMIT 10;
 ```python
 def get_table_registry():
     return {
-        'sensor_data': SourceConfig(
+        'sensor_data': FlowConfig(
             name='sensor_data',
             format='parquet',
             landing_path='Files/landing/sensors/',
             zones={
-                'bronze': ZoneConfig(enabled=True, mode='append'),
-                'silver': ZoneConfig(enabled=True, mode='upsert', 
+                'bronze': StageConfig(enabled=True, mode='append'),
+                'silver': StageConfig(enabled=True, mode='upsert', 
                                     merge_keys=['sensor_id', 'timestamp'])
             }
         )

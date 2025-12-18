@@ -11,7 +11,7 @@ from typing import List, Optional, Dict
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.streaming import StreamingQuery
 
-from ..models import DimensionConfig, SourceConfig
+from ..models import DimensionConfig, FlowConfig
 from ..transformations.common import (
     apply_processing_timestamp,
     add_zone_metadata
@@ -62,14 +62,14 @@ class DimensionPipeline:
     def read_source_tables_for_dimension(
         self,
         dimension_config: DimensionConfig,
-        table_registry: Dict[str, SourceConfig]
+        table_registry: Dict[str, FlowConfig]
     ) -> Dict[str, DataFrame]:
         """
         Read all source tables required for this dimension
         
         Args:
             dimension_config: DimensionConfig instance
-            table_registry: Dict mapping table names to SourceConfig
+            table_registry: Dict mapping table names to FlowConfig
             
         Returns:
             Dict of table_name -> DataFrame
@@ -175,14 +175,14 @@ class DimensionPipeline:
     def process_dimension(
         self,
         dimension_config: DimensionConfig,
-        table_registry: Dict[str, SourceConfig]
+        table_registry: Dict[str, FlowConfig]
     ) -> Optional[StreamingQuery]:
         """
         Full pipeline for one dimensional table
         
         Args:
             dimension_config: DimensionConfig instance
-            table_registry: Dict mapping table names to SourceConfig
+            table_registry: Dict mapping table names to FlowConfig
             
         Returns:
             StreamingQuery if streaming, None if batch
@@ -219,14 +219,14 @@ class DimensionPipeline:
     def process_all(
         self,
         dimension_configs: List[DimensionConfig],
-        table_registry: Dict[str, SourceConfig]
+        table_registry: Dict[str, FlowConfig]
     ) -> List[StreamingQuery]:
         """
         Process all dimensional tables
         
         Args:
             dimension_configs: List of DimensionConfig instances
-            table_registry: Dict mapping table names to SourceConfig
+            table_registry: Dict mapping table names to FlowConfig
             
         Returns:
             List of StreamingQuery instances

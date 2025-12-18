@@ -26,7 +26,7 @@ uv run python -c "from arcflow import ArcFlowOrchestrator; print('✅ ArcFlow in
 ### 1. Create a Simple Pipeline (example_simple.py)
 
 ```python
-from arcflow import SourceConfig, ZoneConfig, ArcFlowOrchestrator
+from arcflow import FlowConfig, StageConfig, ArcFlowOrchestrator
 from arcflow.core.spark_session import create_spark_session
 
 # Create Spark session
@@ -34,17 +34,17 @@ spark = create_spark_session(app_name="QuickStart")
 
 # Define a simple table
 table_registry = {
-    'my_data': SourceConfig(
+    'my_data': FlowConfig(
         name='my_data',
         format='parquet',
         landing_path='Files/landing/my_data/',
         zones={
-            'bronze': ZoneConfig(
+            'bronze': StageConfig(
                 enabled=True,
                 mode='append',
                 description='Raw data'
             ),
-            'silver': ZoneConfig(
+            'silver': StageConfig(
                 enabled=True,
                 mode='upsert',
                 merge_keys=['id'],
@@ -99,7 +99,7 @@ def clean_my_data(df):
 Reference in your config:
 
 ```python
-'silver': ZoneConfig(
+'silver': StageConfig(
     enabled=True,
     mode='upsert',
     merge_keys=['id'],
@@ -120,9 +120,9 @@ config = {
 
 ```python
 zones={
-    'bronze': ZoneConfig(...),
-    'silver': ZoneConfig(...),
-    'gold': ZoneConfig(
+    'bronze': StageConfig(...),
+    'silver': StageConfig(...),
+    'gold': StageConfig(
         enabled=True,
         mode='append',
         custom_transform='aggregate_hourly'
@@ -162,16 +162,16 @@ dimension_registry = {
 
 ```python
 zones={
-    'bronze': ZoneConfig(enabled=True, mode='append'),
-    'silver': ZoneConfig(enabled=True, mode='upsert', merge_keys=['id']),
-    'gold': ZoneConfig(enabled=True, mode='append', custom_transform='aggregate')
+    'bronze': StageConfig(enabled=True, mode='append'),
+    'silver': StageConfig(enabled=True, mode='upsert', merge_keys=['id']),
+    'gold': StageConfig(enabled=True, mode='append', custom_transform='aggregate')
 }
 ```
 
 ### Pattern 2: JSON with Array Explosion
 
 ```python
-SourceConfig(
+FlowConfig(
     format='json',
     json_explode_arrays=True,  # Explode nested arrays
     json_archive_after_read=True,  # Move to archive
@@ -213,7 +213,7 @@ logging.basicConfig(level=logging.INFO)
 
 ```python
 # For upsert mode, ALWAYS specify merge keys
-ZoneConfig(
+StageConfig(
     mode='upsert',
     merge_keys=['id', 'timestamp']  # Don't forget this!
 )

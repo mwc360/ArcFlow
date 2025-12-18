@@ -23,8 +23,8 @@ def example_bronze_validation(df: DataFrame) -> DataFrame:
     
     Args:
         df: Input DataFrame
-        table_config: SourceConfig or DimensionConfig
-        zone_config: ZoneConfig
+        table_config: FlowConfig or DimensionConfig
+        zone_config: StageConfig
         
     Returns:
         Transformed DataFrame
@@ -38,8 +38,8 @@ def example_silver_enrichment(df: DataFrame) -> DataFrame:
     
     Args:
         df: Input DataFrame
-        table_config: SourceConfig or DimensionConfig
-        zone_config: ZoneConfig
+        table_config: FlowConfig or DimensionConfig
+        zone_config: StageConfig
         
     Returns:
         Transformed DataFrame

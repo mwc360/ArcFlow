@@ -37,8 +37,8 @@ class WriterFactory:
         Create Delta writer
         
         Args:
-            table_config: Optional SourceConfig or DimensionConfig
-            zone_config: Optional ZoneConfig
+            table_config: Optional FlowConfig or DimensionConfig
+            zone_config: Optional StageConfig
             
         Returns:
             BaseWriter instance

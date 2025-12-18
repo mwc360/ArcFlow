@@ -9,7 +9,7 @@ ArcFlow provides a means of rapidly moving and transforming data between zones o
 ## Features
 
 - **Zone-Agnostic Architecture**: No hardcoded bronze/silver/gold - use any zone names you want
-- **Single-Source Processing**: Process tables through zones with `SourceConfig`
+- **Single-Source Processing**: Process tables through zones with `FlowConfig`
 - **Multi-Source Modeling**: Build dimensional tables from multiple sources with `DimensionConfig`
 - **Stream & Batch Toggle**: Easy development-to-production switch
 - **Factory Patterns**: Extensible readers and writers for any format
@@ -31,7 +31,7 @@ Gold (aggregations, business logic, dimensional modeling)
 
 ### Core Components
 
-- **Models**: `SourceConfig`, `DimensionConfig`, `ZoneConfig` - Type-safe table definitions
+- **Models**: `FlowConfig`, `DimensionConfig`, `StageConfig` - Type-safe table definitions
 - **Readers**: Factory pattern for Parquet, JSON, CSV, etc.
 - **Writers**: Delta Lake append and upsert operations
 - **Transformations**: Universal + custom per-table-per-zone
@@ -56,32 +56,32 @@ pip install -e .
 
 ### 1. Define Your Tables
 
-Create a table registry with `SourceConfig`:
+Create a table registry with `FlowConfig`:
 
 ```python
-from arcflow import SourceConfig, ZoneConfig
+from arcflow import FlowConfig, StageConfig
 
 tables = {}
 
 # Define a table with zone-specific processing
-tables['sensor_data'] = SourceConfig(
+tables['sensor_data'] = FlowConfig(
     name='sensor_data',
     format='parquet',
     landing_path='Files/landing/opc_ua/sensor_data/',
     zones={
-        'bronze': ZoneConfig(
+        'bronze': StageConfig(
             enabled=True,
             mode='append',
             description='Raw sensor readings'
         ),
-        'silver': ZoneConfig(
+        'silver': StageConfig(
             enabled=True,
             mode='upsert',
             merge_keys=['sensor_id', 'timestamp'],
             custom_transform='clean_sensor_data',
             description='Deduplicated and validated'
         ),
-        'gold': ZoneConfig(
+        'gold': StageConfig(
             enabled=True,
             mode='append',
             custom_transform='aggregate_hourly',
@@ -237,7 +237,7 @@ Edit `src/arcflow/main.py` to:
 ```
 src/arcflow/
 ├── __init__.py                      # Package exports
-├── models.py                        # SourceConfig, DimensionConfig, ZoneConfig
+├── models.py                        # FlowConfig, DimensionConfig, StageConfig
 ├── orchestrator.py                  # ArcFlowOrchestrator
 ├── main.py                          # Entry point for Spark Job Definition
 │
@@ -283,14 +283,14 @@ uv run pytest tests/test_transformations.py
 
 ## Configuration Reference
 
-### SourceConfig
+### FlowConfig
 
 ```python
-SourceConfig(
+FlowConfig(
     name: str,              # Table name
     format: str,            # 'parquet', 'json', 'csv', etc.
     landing_uri: str,      # Path to raw files
-    zones: dict,            # Dict of zone_name -> ZoneConfig
+    zones: dict,            # Dict of zone_name -> StageConfig
     json_explode_arrays: bool = False,
     json_archive_after_read: bool = False,
     csv_header: bool = True,
@@ -299,10 +299,10 @@ SourceConfig(
 )
 ```
 
-### ZoneConfig
+### StageConfig
 
 ```python
-ZoneConfig(
+StageConfig(
     enabled: bool,                      # Enable this zone
     mode: str,                          # 'append' or 'upsert'
     merge_keys: List[str] = None,       # Required for upsert

@@ -36,7 +36,7 @@ class ReaderFactory:
         Create appropriate reader based on source format
         
         Args:
-            table_config: SourceConfig instance
+            table_config: FlowConfig instance
             
         Returns:
             BaseReader subclass instance

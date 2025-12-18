@@ -11,7 +11,7 @@ from typing import List, Dict, Optional
 from pyspark.sql import SparkSession
 from pyspark.sql.streaming import StreamingQuery
 
-from .models import SourceConfig, DimensionConfig
+from .models import FlowConfig, DimensionConfig
 from .core.stream_manager import StreamManager
 from .pipelines.zone_pipeline import ZonePipeline
 from .pipelines.dimension_pipeline import DimensionPipeline
@@ -32,7 +32,7 @@ class Controller:
         self,
         spark: SparkSession,
         config: dict,
-        table_registry: Dict[str, SourceConfig],
+        table_registry: Dict[str, FlowConfig],
         dimension_registry: Optional[Dict[str, DimensionConfig]] = None
     ):
         """
@@ -41,7 +41,7 @@ class Controller:
         Args:
             spark: SparkSession
             config: Global pipeline configuration
-            table_registry: Dict of table_name -> SourceConfig
+            table_registry: Dict of table_name -> FlowConfig
             dimension_registry: Optional dict of dimension_name -> DimensionConfig
         """
         self.spark = spark

@@ -12,7 +12,7 @@ import logging
 import sys
 from typing import Dict
 
-from arcflow import SourceConfig, DimensionConfig, ZoneConfig, Controller
+from arcflow import FlowConfig, DimensionConfig, StageConfig, Controller
 from arcflow.core.spark_session import create_spark_session
 from arcflow.config import get_config
 
@@ -50,7 +50,7 @@ def get_pipeline_config() -> dict:
     return config
 
 
-def get_table_registry() -> Dict[str, SourceConfig]:
+def get_table_registry() -> Dict[str, FlowConfig]:
     """
     Define all source tables and their zone configurations
     
@@ -58,29 +58,29 @@ def get_table_registry() -> Dict[str, SourceConfig]:
     you want to process through the lakehouse zones.
     
     Returns:
-        Dict mapping table names to SourceConfig instances
+        Dict mapping table names to FlowConfig instances
     """
     tables = {}
     
     # Example: OPC UA sensor data
-    tables['sensor_data'] = SourceConfig(
+    tables['sensor_data'] = FlowConfig(
         name='sensor_data',
         format='parquet',
         source_uri='Files/landing/opc_ua/sensor_data/',
         zones={
-            'bronze': ZoneConfig(
+            'bronze': StageConfig(
                 enabled=True,
                 mode='append',
                 description='Raw sensor readings'
             ),
-            'silver': ZoneConfig(
+            'silver': StageConfig(
                 enabled=True,
                 mode='upsert',
                 merge_keys=['sensor_id', 'timestamp'],
                 custom_transform='clean_sensor_data',  # Table-specific cleaning
                 description='Deduplicated and validated sensor data'
             ),
-            'gold': ZoneConfig(
+            'gold': StageConfig(
                 enabled=True,
                 mode='append',
                 custom_transform='aggregate_sensor_hourly',
@@ -90,17 +90,17 @@ def get_table_registry() -> Dict[str, SourceConfig]:
     )
     
     # Example: Equipment maintenance logs
-    tables['maintenance_logs'] = SourceConfig(
+    tables['maintenance_logs'] = FlowConfig(
         name='maintenance_logs',
         format='json',
         source_uri='Files/landing/maintenance/',
         json_explode_arrays=False,
         zones={
-            'bronze': ZoneConfig(
+            'bronze': StageConfig(
                 enabled=True,
                 mode='append'
             ),
-            'silver': ZoneConfig(
+            'silver': StageConfig(
                 enabled=True,
                 mode='upsert',
                 merge_keys=['log_id'],
@@ -110,13 +110,13 @@ def get_table_registry() -> Dict[str, SourceConfig]:
     )
     
     # Example: Production schedule
-    tables['production_schedule'] = SourceConfig(
+    tables['production_schedule'] = FlowConfig(
         name='production_schedule',
         format='parquet',
         source_uri='Files/landing/production/',
         zones={
-            'bronze': ZoneConfig(enabled=True, mode='append'),
-            'silver': ZoneConfig(enabled=True, mode='upsert', merge_keys=['schedule_id'])
+            'bronze': StageConfig(enabled=True, mode='append'),
+            'silver': StageConfig(enabled=True, mode='upsert', merge_keys=['schedule_id'])
         }
     )
     

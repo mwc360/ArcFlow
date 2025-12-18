@@ -39,7 +39,7 @@ class BaseReader(ABC):
         Read data from source
         
         Args:
-            table_config: SourceConfig instance
+            table_config: FlowConfig instance
             
         Returns:
             DataFrame

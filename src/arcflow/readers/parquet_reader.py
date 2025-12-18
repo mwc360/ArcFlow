@@ -17,7 +17,7 @@ class ParquetReader(BaseReader):
         Read Parquet files from landing zone
         
         Args:
-            table_config: SourceConfig instance
+            table_config: FlowConfig instance
             
         Returns:
             DataFrame

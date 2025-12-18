@@ -75,7 +75,7 @@ your-project/
 **Location**: Environment libraries  
 **What it provides**:
 - Controller class
-- SourceConfig, ZoneConfig, DimensionConfig
+- FlowConfig, StageConfig, DimensionConfig
 - Readers, writers, transformations
 - Pipeline orchestration
 
@@ -107,16 +107,16 @@ return get_config({
 ### Add a Table
 ```python
 # In pipeline_config.py → get_table_registry()
-tables['my_table'] = SourceConfig(
+tables['my_table'] = FlowConfig(
     name='my_table',
     format='parquet',
     landing_path='Files/landing/my_table/',
     zones={
-        'bronze': ZoneConfig(
+        'bronze': StageConfig(
             enabled=True,
             mode='append'
         ),
-        'silver': ZoneConfig(
+        'silver': StageConfig(
             enabled=True,
             mode='upsert',
             merge_keys=['id'],

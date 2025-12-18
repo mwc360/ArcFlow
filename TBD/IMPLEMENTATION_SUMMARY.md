@@ -15,7 +15,7 @@ A **production-ready, zone-agnostic ELT framework** for Microsoft Fabric using P
 ```
 src/arcflow/
 ├── __init__.py                          # Package exports
-├── models.py                            # SourceConfig, DimensionConfig, ZoneConfig
+├── models.py                            # FlowConfig, DimensionConfig, StageConfig
 ├── orchestrator.py                      # ArcFlowOrchestrator - Main coordinator
 ├── main.py                              # Entry point for Spark Job Definition
 │
@@ -66,7 +66,7 @@ README_arcflow.md                     # Comprehensive documentation
 
 ### 2. Two Processing Paths
 
-**Path A: Single-Source (SourceConfig)**
+**Path A: Single-Source (FlowConfig)**
 ```
 Landing → ZonePipeline → Bronze → ZonePipeline → Silver → ZonePipeline → Gold
 ```
@@ -87,7 +87,7 @@ Silver Table 3 ─┘
 
 2. **Custom Transformations** (per-table, per-zone)
    - Registered via decorator: `@register_zone_transformer('clean_sensor_data')`
-   - Referenced in config: `ZoneConfig(custom_transform='clean_sensor_data')`
+   - Referenced in config: `StageConfig(custom_transform='clean_sensor_data')`
 
 3. **Dimension Builders** (multi-source)
    - Registered via decorator: `@register_dimension_transformer('build_equipment_fact')`
@@ -110,15 +110,15 @@ Silver Table 3 ─┘
 ### Basic Single-Source Table
 
 ```python
-from arcflow import SourceConfig, ZoneConfig
+from arcflow import FlowConfig, StageConfig
 
-sensor_data = SourceConfig(
+sensor_data = FlowConfig(
     name='sensor_data',
     format='parquet',
     landing_path='Files/landing/opc_ua/',
     zones={
-        'bronze': ZoneConfig(enabled=True, mode='append'),
-        'silver': ZoneConfig(
+        'bronze': StageConfig(enabled=True, mode='append'),
+        'silver': StageConfig(
             enabled=True, 
             mode='upsert', 
             merge_keys=['sensor_id', 'timestamp'],
@@ -176,21 +176,21 @@ orchestrator.run_full_pipeline(zones=['bronze', 'silver', 'gold'])
 
 ## 📊 Configuration Models
 
-### SourceConfig (Single-Source Tables)
+### FlowConfig (Single-Source Tables)
 ```python
 @dataclass
-class SourceConfig:
+class FlowConfig:
     name: str                    # Table name
     format: str                  # 'parquet', 'json', 'csv'
     landing_path: str           # Raw file location
-    zones: Dict[str, ZoneConfig] # Zone-specific configs
+    zones: Dict[str, StageConfig] # Zone-specific configs
     # ... format-specific options
 ```
 
-### ZoneConfig (Per-Zone Settings)
+### StageConfig (Per-Zone Settings)
 ```python
 @dataclass
-class ZoneConfig:
+class StageConfig:
     enabled: bool               # Enable this zone for table
     mode: str                   # 'append' or 'upsert'
     merge_keys: List[str]       # Required for upsert

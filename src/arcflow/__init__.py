@@ -10,7 +10,7 @@ Scalable, testable, and production-ready ELT framework designed for:
 
 __version__ = "0.1.0"
 
-from .models import SourceConfig, DimensionConfig, ZoneConfig
+from .models import FlowConfig, DimensionConfig, StageConfig
 from .controller import Controller
 from .pipelines.zone_pipeline import ZonePipeline
 from .pipelines.dimension_pipeline import DimensionPipeline
@@ -18,9 +18,9 @@ from .config import Defaults, get_config
 from .utils import build_table_reference, parse_table_reference, get_table_identifier
 
 __all__ = [
-    'SourceConfig',
+    'FlowConfig',
     'DimensionConfig', 
-    'ZoneConfig',
+    'StageConfig',
     'Controller',
     'ZonePipeline',
     'DimensionPipeline',

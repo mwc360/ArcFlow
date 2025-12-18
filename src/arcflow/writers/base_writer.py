@@ -47,8 +47,8 @@ class BaseWriter(ABC):
         
         Args:
             df: DataFrame to write
-            table_config: SourceConfig or DimensionConfig
-            zone_config: ZoneConfig instance
+            table_config: FlowConfig or DimensionConfig
+            zone_config: StageConfig instance
             zone: Target zone name
             
         Returns:

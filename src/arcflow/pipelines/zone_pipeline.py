@@ -8,7 +8,7 @@ from typing import List, Optional
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.streaming import StreamingQuery
 
-from ..models import SourceConfig, ZoneConfig
+from ..models import FlowConfig, StageConfig
 from ..transformations.common import (
     normalize_columns_to_snake_case,
     apply_processing_timestamp
@@ -60,13 +60,13 @@ class ZonePipeline:
             f"Initialized {zone} pipeline (streaming: {self.is_streaming})"
         )
 
-    def _get_source_zone(self, table_config: SourceConfig) -> Optional[str]:
+    def _get_source_zone(self, table_config: FlowConfig) -> Optional[str]:
         """
         Calculate the source zone for a given target zone.
         Returns the previous zone in the zones dict, or None if it's the first zone.
 
         Args:
-            table_config: SourceConfig with zones defined
+            table_config: FlowConfig with zones defined
             current_zone: The target zone name (e.g., 'silver')
 
         Returns:
@@ -91,12 +91,12 @@ class ZonePipeline:
             # Return previous zone
             return zone_names[current_index - 1]
         
-    def _get_catalog(self, table_config: SourceConfig, zone) -> Optional[str]:
+    def _get_catalog(self, table_config: FlowConfig, zone) -> Optional[str]:
         """
         Get catalog name for a given zone from table config
         
         Args:
-            table_config: SourceConfig instance
+            table_config: FlowConfig instance
             zone: Zone name
         """
         zone_config = table_config.get_zone_config(zone)
@@ -104,12 +104,12 @@ class ZonePipeline:
             return zone_config.catalog_name
         return None
     
-    def _get_schema(self, table_config: SourceConfig, zone) -> Optional[str]:
+    def _get_schema(self, table_config: FlowConfig, zone) -> Optional[str]:
         """
         Get schema name for a given zone from table config
         
         Args:
-            table_config: SourceConfig instance
+            table_config: FlowConfig instance
             zone: Zone name
         """
         zone_config = table_config.get_zone_config(zone)
@@ -117,12 +117,12 @@ class ZonePipeline:
             return zone_config.schema_name
         return zone
     
-    def read_source(self, table_config: SourceConfig) -> DataFrame:
+    def read_source(self, table_config: FlowConfig) -> DataFrame:
         """
         Read from source - either landing zone or previous zone
         
         Args:
-            table_config: SourceConfig instance
+            table_config: FlowConfig instance
             
         Returns:
             DataFrame
@@ -152,8 +152,8 @@ class ZonePipeline:
     def apply_transformations(
         self,
         df: DataFrame,
-        table_config: SourceConfig,
-        zone_config: ZoneConfig
+        table_config: FlowConfig,
+        zone_config: StageConfig
     ) -> DataFrame:
         """
         Apply zone-specific transformations
@@ -163,8 +163,8 @@ class ZonePipeline:
         
         Args:
             df: Input DataFrame
-            table_config: SourceConfig instance
-            zone_config: ZoneConfig instance
+            table_config: FlowConfig instance
+            zone_config: StageConfig instance
             
         Returns:
             Transformed DataFrame
@@ -192,13 +192,13 @@ class ZonePipeline:
         
         return df
     
-    def test_input(self, table_config: SourceConfig) -> DataFrame:
+    def test_input(self, table_config: FlowConfig) -> DataFrame:
         """
         Tests the input of the zone pipeline without writing.
         Returns a batch DataFrame for testing (even if pipeline is configured for streaming).
         
         Args:
-            table_config: SourceConfig instance
+            table_config: FlowConfig instance
             
         Returns:
             DataFrame (batch mode)
@@ -229,13 +229,13 @@ class ZonePipeline:
             # Restore original streaming state
             self.is_streaming = original_streaming
     
-    def test_output(self, table_config: SourceConfig) -> DataFrame:
+    def test_output(self, table_config: FlowConfig) -> DataFrame:
         """
         Tests the output of the zone pipeline without writing.
         Returns a batch DataFrame for testing (even if pipeline is configured for streaming).
         
         Args:
-            table_config: SourceConfig instance
+            table_config: FlowConfig instance
             
         Returns:
             DataFrame (batch mode)
@@ -272,16 +272,16 @@ class ZonePipeline:
     def write_target(
         self,
         df: DataFrame,
-        table_config: SourceConfig,
-        zone_config: ZoneConfig
+        table_config: FlowConfig,
+        zone_config: StageConfig
     ) -> Optional[StreamingQuery]:
         """
         Write to target zone
         
         Args:
             df: DataFrame to write
-            table_config: SourceConfig instance
-            zone_config: ZoneConfig instance
+            table_config: FlowConfig instance
+            zone_config: StageConfig instance
             
         Returns:
             StreamingQuery if streaming, None if batch
@@ -290,12 +290,12 @@ class ZonePipeline:
         writer = writer_factory.create_writer(table_config, zone_config)
         return writer.write(df, table_config, zone_config, self.zone)
     
-    def process_table(self, table_config: SourceConfig) -> Optional[StreamingQuery]:
+    def process_table(self, table_config: FlowConfig) -> Optional[StreamingQuery]:
         """
         Full pipeline for one table in this zone
         
         Args:
-            table_config: SourceConfig instance
+            table_config: FlowConfig instance
             
         Returns:
             StreamingQuery if streaming, None if batch
@@ -325,12 +325,12 @@ class ZonePipeline:
             self.logger.error(f"Failed to process {table_config.name}: {e}")
             raise
     
-    def process_all(self, table_configs: List[SourceConfig]) -> List[StreamingQuery]:
+    def process_all(self, table_configs: List[FlowConfig]) -> List[StreamingQuery]:
         """
         Process all tables for this zone
         
         Args:
-            table_configs: List of SourceConfig instances
+            table_configs: List of FlowConfig instances
             
         Returns:
             List of StreamingQuery instances

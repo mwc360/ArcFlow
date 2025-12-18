@@ -9,7 +9,7 @@ from pyspark.sql.types import StructType
 
 
 @dataclass
-class ZoneConfig:
+class StageConfig:
     """
     Configuration for processing in a specific zone
     
@@ -23,7 +23,7 @@ class ZoneConfig:
 
 
 @dataclass
-class SourceConfig:
+class FlowConfig:
     """
     Complete configuration for a source table across all zones
     
@@ -40,7 +40,7 @@ class SourceConfig:
     source_uri: Optional[str] = None
     
     # Zone Configurations - flexible for any zone architecture
-    zones: Dict[str, ZoneConfig] = field(default_factory=dict)
+    zones: Dict[str, StageConfig] = field(default_factory=dict)
     
     # Streaming Configuration
     trigger_mode: Literal['availableNow', 'processingTime', 'continuous'] = 'availableNow'
@@ -60,7 +60,7 @@ class SourceConfig:
     tags: List[str] = field(default_factory=list)
     owner: Optional[str] = None
     
-    def get_zone_config(self, zone: str) -> Optional[ZoneConfig]:
+    def get_zone_config(self, zone: str) -> Optional[StageConfig]:
         """Get configuration for a specific zone"""
         return self.zones.get(zone)
     
@@ -75,7 +75,7 @@ class DimensionConfig:
     """
     Configuration for dimensional/fact tables built from multiple sources
     
-    Unlike SourceConfig (1 source -> 1 table), DimensionConfig combines multiple sources
+    Unlike FlowConfig (1 source -> 1 table), DimensionConfig combines multiple sources
     to create enriched dimensions, facts, and bridge tables
     """
     
@@ -89,7 +89,7 @@ class DimensionConfig:
     
     # Target zone configuration
     target_zone: str  # Where to write (e.g., 'gold')
-    zone_config: ZoneConfig  # Mode, merge_keys, partitioning
+    zone_config: StageConfig  # Mode, merge_keys, partitioning
     
     # Custom transformation
     transform: str  # Name of dimension builder function

@@ -62,11 +62,13 @@ if __name__ == "__main__":
           .config('spark.microsoft.delta.targetFileSize.adaptive.enabled', True)
           .config('spark.microsoft.delta.optimize.fileLevelTarget.enabled', True)
           .config('spark.microsoft.delta.snapshot.driverMode.enabled', True)
+          .config('spark.databricks.delta.properties.defaults.enableDeletionVectors', True)
+          .config('spark.databricks.delta.optimizeWrite.enabled', True) # OW enabled since it's streaming micro batches
           .config('spark.native.enabled', True)
           .getOrCreate())
     
     spark_context = spark.sparkContext
-    spark_context.setLogLevel("DEBUG")
+    spark_context.setLogLevel("ERROR")
 
     logger.info("=" * 80)
     logger.info("Starting LakeGen: McMillanDataGen")
