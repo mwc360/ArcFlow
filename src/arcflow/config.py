@@ -53,6 +53,7 @@ class Defaults:
     
     SPARK_SHUFFLE_PARTITIONS: int = 200
     SPARK_SQL_ADAPTIVE_ENABLED: bool = True
+    AUTOSET_SPARK_CONFIGS: bool = True
     
     @classmethod
     def get_default_config(cls) -> Dict[str, Any]:

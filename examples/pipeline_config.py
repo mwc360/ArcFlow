@@ -123,7 +123,7 @@ def silver_shipment(df) -> DataFrame:
 
 tables["shipment"] = FlowConfig(
     name="shipment",
-    format="eventhub",
+    format="kafka",
     source_uri="Endpoint=sb://esehmtcypknmdp3i6ao83erb.servicebus.windows.net/;SharedAccessKeyName=key_e447b74c-5906-473e-95b3-5456d3a7b3a2;SharedAccessKey=pw6+QKKi2bQVt2A870eNZNskYFZMhqIXJ+AEhE86eoI=;EntityPath=es_a61f574d-aa40-4d49-9794-466d9dde69db",
     schema=StructType(
         [

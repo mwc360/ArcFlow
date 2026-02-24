@@ -111,6 +111,100 @@ Now when you edit `src/arcflow/*.py` and save, the notebook will automatically p
 
 ---
 
+## 🌊 Developing a New Stream Pipeline
+
+ArcFlow has a built-in iterative development flow for Kafka and Event Hubs sources.
+`ZonePipeline.test_input()` and `test_output()` **stream data into a Spark memory view** using
+`trigger(availableNow=True)` — no checkpoints, no Delta writes, row-limited. This lets you
+explore and validate a stream entirely in a notebook before wiring it into the full pipeline.
+
+### Step 1 — Discover the payload (no schema yet)
+
+```python
+from arcflow.pipelines.zone_pipeline import ZonePipeline
+from pipeline_config import tables
+
+pipeline = ZonePipeline(spark=spark, zone="bronze", config={"streaming_enabled": True})
+
+# Streams real messages into memory, returns them as a batch DataFrame
+df = pipeline.test_input(tables["shipment"], raw=True, limit=20)
+df.show(truncate=False)
+```
+
+`raw=True` skips JSON deserialization entirely — you see the raw message body as a string
+alongside all connector metadata columns. No schema is required.
+
+**Kafka metadata columns:** `key`, `topic`, `partition`, `offset`, `timestamp`, `timestampType`, `headers`
+
+**Event Hubs metadata columns:** `offset`, `sequenceNumber`, `enqueuedTime`, `publisher`, `partitionKey`, `properties`, `systemProperties`
+
+> **How it works:** ArcFlow opens a real streaming connection to the broker, reads all
+> backlogged messages using `availableNow` trigger (stops automatically when caught up),
+> writes results to a Spark memory view, then returns a limited batch for inspection.
+> The view (`_arcflow_test_<name>`) persists for follow-up `spark.sql(...)` queries.
+
+---
+
+### Step 2 — Draft a schema and validate deserialization
+
+Add a `schema` to your `FlowConfig` based on what you saw in Step 1, then call `test_input`
+without `raw=True`:
+
+```python
+# raw=False (default) — applies from_json() using FlowConfig.schema
+df = pipeline.test_input(tables["shipment"], limit=20)
+df.printSchema()
+df.show()
+```
+
+If columns are null or missing, refine the `StructType` in `pipeline_config.py` and retry.
+
+---
+
+### Step 3 — Test the transformer
+
+Add a `custom_transform` to the zone's `StageConfig` in `pipeline_config.py`, then call
+`test_output` to see the full result — schema deserialization + transformer + snake_case
+normalisation applied:
+
+```python
+# Applies: from_json(schema) → custom_transform → snake_case → _processing_timestamp
+df = pipeline.test_output(tables["shipment"], limit=20)
+df.show()
+```
+
+> **Memory view:** `_arcflow_test_out_<name>` — persists for further `spark.sql(...)` queries.
+
+---
+
+### Step 4 — Ship it
+
+Once `test_output` looks right:
+
+```python
+from arcflow import Controller
+from pipeline_config import tables
+
+controller = Controller(spark, config, tables)
+controller.run_zone_pipeline("bronze")   # starts the real streaming query
+```
+
+---
+
+### `test_input` / `test_output` reference
+
+| Method | `raw` flag | What runs | Memory view |
+|---|---|---|---|
+| `test_input(..., raw=True)` | No schema needed | Raw bytes → string | `_arcflow_test_<name>` |
+| `test_input(...)` | Schema required | `from_json(schema)` | `_arcflow_test_<name>` |
+| `test_output(...)` | Schema required | `from_json` + transformer + normalise | `_arcflow_test_out_<name>` |
+
+Both methods work for **file-based sources** too (parquet, json, csv) — they use a standard
+batch read with `.limit(limit)` instead of the streaming path. The `raw` flag is ignored for
+file sources.
+
+---
+
 ## 🚀 Running Tests
 
 ### Run all tests:

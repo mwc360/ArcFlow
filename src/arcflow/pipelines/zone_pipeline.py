@@ -20,6 +20,9 @@ from ..transformations.zone_transforms import (
 from ..readers.reader_factory import ReaderFactory
 from ..writers.writer_factory import WriterFactory
 from ..utils.table_utils import build_table_reference
+from ..utils.endpoint_validator import StreamEndpointValidator
+
+_STREAMING_FORMATS = ('kafka', 'eventhub')
 
 
 class ZonePipeline:
@@ -192,81 +195,171 @@ class ZonePipeline:
         
         return df
     
-    def test_input(self, table_config: FlowConfig) -> DataFrame:
+    def _stream_to_memory(
+        self,
+        streaming_df: DataFrame,
+        view_name: str,
+        limit: int,
+        timeout_seconds: int,
+    ) -> DataFrame:
         """
-        Tests the input of the zone pipeline without writing.
-        Returns a batch DataFrame for testing (even if pipeline is configured for streaming).
-        
+        Write a streaming DataFrame to a Spark memory sink and return a batch result.
+
+        Uses ``trigger(availableNow=True)`` — reads all backlogged messages then stops
+        automatically. No checkpoint is required (memory sink is stateless).
+        The in-memory view persists in the Spark session for follow-up ad-hoc SQL queries.
+
         Args:
-            table_config: FlowConfig instance
-            
+            streaming_df: Streaming DataFrame to materialise.
+            view_name: Name of the in-memory temp view (prefixed with _arcflow_).
+            limit: Maximum rows to return.
+            timeout_seconds: Safety-net timeout for awaitTermination.
+
         Returns:
-            DataFrame (batch mode)
+            Batch DataFrame with at most ``limit`` rows.
         """
-        # Get zone-specific configuration
+        query = (
+            streaming_df.writeStream
+            .format('memory')
+            .queryName(view_name)
+            .trigger(availableNow=True)
+            .start()
+        )
+        query.awaitTermination(timeout=timeout_seconds)
+        self.logger.info(
+            f"Memory view '{view_name}' ready — "
+            f"run spark.sql(\"SELECT * FROM {view_name}\") for further queries."
+        )
+        return self.spark.sql(f"SELECT * FROM {view_name} LIMIT {limit}")
+
+    def test_input(
+        self,
+        table_config: FlowConfig,
+        limit: int = 20,
+        timeout_seconds: int = 60,
+        raw: bool = False,
+    ) -> DataFrame:
+        """
+        Test the source read for this pipeline without writing to any zone.
+
+        For Kafka / Event Hubs sources the data is streamed into a Spark memory view
+        using ``trigger(availableNow=True)`` — no checkpoint, no Delta write, row-limited.
+        For file-based sources a standard batch read is used.
+
+        Args:
+            table_config: FlowConfig instance.
+            limit: Maximum number of rows to return (streaming sources only).
+            timeout_seconds: awaitTermination timeout in seconds (streaming sources only).
+            raw: If True (streaming sources only), return the raw message payload as a
+                 string column named ``payload`` without applying JSON deserialization.
+                 Useful for initial stream discovery before a schema is defined.
+                 Ignored for file-based sources.
+
+        Returns:
+            DataFrame (batch) — schema columns + metadata columns when raw=False,
+            payload string + metadata columns when raw=True.
+
+        Notes:
+            The in-memory view ``_arcflow_test_<name>`` persists in the Spark session
+            after this call for further ad-hoc SQL exploration.
+        """
         zone_config = table_config.get_zone_config(self.zone)
         if not zone_config:
             self.logger.info(f"Table {table_config.name} not configured for {self.zone} zone")
             return None
-        
+
         self.logger.info(f"Testing {table_config.name} input for {self.zone} zone")
 
-        # Temporarily save streaming state
+        if table_config.format in _STREAMING_FORMATS:
+            validation = StreamEndpointValidator.validate(table_config)
+            if not validation.valid:
+                raise RuntimeError(
+                    f"Endpoint validation failed for '{table_config.name}': {validation.error}"
+                )
+            reader = ReaderFactory(self.spark, True, self.config).create_reader(table_config)
+            try:
+                streaming_df = reader.read(table_config, raw=raw, max_records=limit)
+            except Exception as e:
+                self.logger.error(f"Failed to read {table_config.name}: {e}")
+                raise
+            view_name = f"_arcflow_test_{table_config.name}"
+            return self._stream_to_memory(streaming_df, view_name, limit, timeout_seconds)
+
+        # File-based sources — existing batch path
         original_streaming = self.is_streaming
         self.is_streaming = False
-        
         try:
-            # Read
             df = self.read_source(table_config)
-            
             self.logger.info(f"Successfully generated test input for {table_config.name}")
-            return df
-            
+            return df.limit(limit)
         except Exception as e:
             self.logger.error(f"Failed to test {table_config.name} input: {e}")
             raise
         finally:
-            # Restore original streaming state
             self.is_streaming = original_streaming
-    
-    def test_output(self, table_config: FlowConfig) -> DataFrame:
+
+    def test_output(
+        self,
+        table_config: FlowConfig,
+        limit: int = 20,
+        timeout_seconds: int = 60,
+    ) -> DataFrame:
         """
-        Tests the output of the zone pipeline without writing.
-        Returns a batch DataFrame for testing (even if pipeline is configured for streaming).
-        
+        Test the full read + transform pipeline without writing to any zone.
+
+        For Kafka / Event Hubs sources the data is streamed into a Spark memory view
+        using ``trigger(availableNow=True)`` — no checkpoint, no Delta write, row-limited.
+        Schema deserialization and all zone transformations (``custom_transform``,
+        snake_case normalisation, processing timestamp) are applied before writing to memory.
+        For file-based sources a standard batch read + transform is used.
+
         Args:
-            table_config: FlowConfig instance
-            
+            table_config: FlowConfig instance.
+            limit: Maximum number of rows to return (streaming sources only).
+            timeout_seconds: awaitTermination timeout in seconds (streaming sources only).
+
         Returns:
-            DataFrame (batch mode)
+            Transformed DataFrame (batch).
+
+        Notes:
+            The in-memory view ``_arcflow_test_out_<name>`` persists in the Spark session
+            after this call for further ad-hoc SQL exploration.
         """
-        # Get zone-specific configuration
         zone_config = table_config.get_zone_config(self.zone)
         if not zone_config:
             self.logger.info(f"Table {table_config.name} not configured for {self.zone} zone")
             return None
-        
+
         self.logger.info(f"Testing {table_config.name} output for {self.zone} zone")
 
-        # Temporarily save streaming state
+        if table_config.format in _STREAMING_FORMATS:
+            validation = StreamEndpointValidator.validate(table_config)
+            if not validation.valid:
+                raise RuntimeError(
+                    f"Endpoint validation failed for '{table_config.name}': {validation.error}"
+                )
+            reader = ReaderFactory(self.spark, True, self.config).create_reader(table_config)
+            try:
+                streaming_df = reader.read(table_config, raw=False, max_records=limit)
+                streaming_df = self.apply_transformations(streaming_df, table_config, zone_config)
+            except Exception as e:
+                self.logger.error(f"Failed to build pipeline for {table_config.name}: {e}")
+                raise
+            view_name = f"_arcflow_test_out_{table_config.name}"
+            return self._stream_to_memory(streaming_df, view_name, limit, timeout_seconds)
+
+        # File-based sources — existing batch path
         original_streaming = self.is_streaming
         self.is_streaming = False
-        
         try:
-            # Read
             df = self.read_source(table_config)
-            
-            # Transform
             df = self.apply_transformations(df, table_config, zone_config)
-            
             self.logger.info(f"Successfully generated test output for {table_config.name}")
-            return df
-            
+            return df.limit(limit)
         except Exception as e:
             self.logger.error(f"Failed to test {table_config.name} output: {e}")
             raise
         finally:
-            # Restore original streaming state
             self.is_streaming = original_streaming
     
     def write_target(

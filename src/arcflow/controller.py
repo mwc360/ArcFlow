@@ -13,6 +13,7 @@ from pyspark.sql.streaming import StreamingQuery
 
 from .models import FlowConfig, DimensionConfig
 from .core.stream_manager import StreamManager
+from .core.spark_configurator import SparkConfigurator
 from .pipelines.zone_pipeline import ZonePipeline
 from .pipelines.dimension_pipeline import DimensionPipeline
 
@@ -54,6 +55,17 @@ class Controller:
         self.stream_manager = StreamManager()
         
         self.logger = logging.getLogger(__name__)
+
+        # Auto-apply best-practice Spark configs (opt-out via autoset_spark_configs=False)
+        if config.get('autoset_spark_configs', True):
+            overrides = config.get('spark_config_overrides')
+            result = SparkConfigurator.apply(spark, overrides=overrides)
+            self.logger.info(
+                f"SparkConfigurator: {len(result['applied'])} configs applied, "
+                f"{len(result['skipped'])} already set, "
+                f"{len(result['unset'])} unset"
+            )
+
         self.logger.info("Initialized ArcFlowOrchestrator")
     
     def run_zone_pipeline(
