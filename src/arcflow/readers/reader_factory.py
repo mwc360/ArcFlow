@@ -6,6 +6,8 @@ from typing import Dict, Any
 from .base_reader import BaseReader
 from .parquet_reader import ParquetReader
 from .json_reader import JsonReader
+from .kafka_reader import KafkaReader
+from .eventhub_reader import EventHubReader
 
 
 class ReaderFactory:
@@ -47,6 +49,8 @@ class ReaderFactory:
         readers = {
             'parquet': ParquetReader,
             'json': JsonReader,
+            'kafka': KafkaReader,
+            'eventhub': EventHubReader,
             # 'csv': CsvReader,  # Can be added later
         }
         

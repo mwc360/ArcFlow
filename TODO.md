@@ -3,4 +3,5 @@
 1. Rationalize and rename ZonePipeline and Controller (Controller == Pipeline, ZonePipeline == StagePipeline?)
 1. Auto create DAG based on tables in StageConfig
 1. Queue to manage not calling stream availableNow multiple times (at the end of a downstream Stage, check queue and trigger again?)
-1. Support query input to FlowConfig? 
+1. Support setting shuffle partitions based on compute size
+    - would this need to be called at the start of every operation in case of scaling?

@@ -36,51 +36,65 @@ CONFIGURATION:
 """
 from arcflow import Controller
 from lakegen.generators.mcmillan_industrial_group import McMillanDataGen
-import notebookutils
 from pyspark.sql import SparkSession
+import argparse
 from pipeline_config import tables
 
 import logging
 import sys
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+def parse_args(argv):
+    p = argparse.ArgumentParser()
+    p.add_argument("--kafka-connection-string", type=str, required=False, help="Kafka connection string for CDC source (e.g. Azure Event Hubs or Fabric Eventstream)")
+    p.add_argument("--debug", action="store_true", help="Enable DEBUG logging")
+    return p.parse_args(argv)
 
-logger = logging.getLogger(__name__)
+def configure_logging(debug: bool) -> logging.Logger:
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+    return logging.getLogger(__name__)
 
-if __name__ == "__main__":
+def create_spark(app_name: str, debug: bool) -> SparkSession:
+    spark = (
+        SparkSession
+            .builder
+            .appName(app_name)
+            .config('spark.databricks.delta.autoCompact.enabled', True)
+            .config('spark.microsoft.delta.targetFileSize.adaptive.enabled', True)
+            .config('spark.microsoft.delta.optimize.fileLevelTarget.enabled', True)
+            .config('spark.microsoft.delta.snapshot.driverMode.enabled', True)
+            .config('spark.databricks.delta.properties.defaults.enableDeletionVectors', True)
+            .config('spark.databricks.delta.optimizeWrite.enabled', True) # OW enabled since it's streaming micro batches
+            .config('spark.native.enabled', True)
+            .config("spark.sql.streaming.stateStore.providerClass", "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider")
+            .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("INFO" if debug else "ERROR")
+    return spark
 
-    # Step 1: Create Spark Session
-    spark = (SparkSession
-          .builder
-          .appName("sjdsampleapp") 
-          .config('spark.databricks.delta.autoCompact.enabled', True)
-          .config('spark.microsoft.delta.targetFileSize.adaptive.enabled', True)
-          .config('spark.microsoft.delta.optimize.fileLevelTarget.enabled', True)
-          .config('spark.microsoft.delta.snapshot.driverMode.enabled', True)
-          .config('spark.databricks.delta.properties.defaults.enableDeletionVectors', True)
-          .config('spark.databricks.delta.optimizeWrite.enabled', True) # OW enabled since it's streaming micro batches
-          .config('spark.native.enabled', True)
-          .getOrCreate())
-    
-    spark_context = spark.sparkContext
-    spark_context.setLogLevel("ERROR")
+def main(argv: list[str]) -> None:
+    # parse input arguments
+    args = parse_args(argv)
+
+    # configure logging
+    logger = configure_logging(args.debug)
+
+    # assign SparkSession as variable
+    spark = create_spark("myApp", args.debug)
 
     logger.info("=" * 80)
     logger.info("Starting LakeGen: McMillanDataGen")
     logger.info("=" * 80)
-    default_workspace_id = notebookutils.runtime.context['currentWorkspaceId']
-    default_lakehouse_id = notebookutils.runtime.context['defaultLakehouseId']
-    onelake_endpoint = spark.sparkContext._jsc.hadoopConfiguration().get("trident.onelake.endpoint").split('//')[1]
-    target_folder_uri=f"abfss://{default_workspace_id}@{onelake_endpoint}/{default_lakehouse_id}/Files/landing/"
+
+    target_folder_uri=f"/lakehouse/default/Files/landing/"
 
     logger.info(target_folder_uri)
     data_gen = McMillanDataGen(
-        target_folder_uri=f"abfss://{default_workspace_id}@{onelake_endpoint}/{default_lakehouse_id}/Files/landing/",
+        target_folder_uri=target_folder_uri,
         output_type_map={
             "shipment": "json",
             "shipment_scan_event": "json",
@@ -97,12 +111,9 @@ if __name__ == "__main__":
     )
     data_gen.start(verbose=False)
 
-
-
     logger.info("=" * 80)
     logger.info("Starting ArcFlow ELT Framework")
     logger.info("=" * 80)
-
 
     # Configure pipeline
     config = {
@@ -126,3 +137,6 @@ if __name__ == "__main__":
     # Step 3: Run full pipeline
     logger.info("Starting full ELT pipeline...")
     controller.run_full_pipeline(zones=['bronze', 'silver'])
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

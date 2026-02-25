@@ -11,9 +11,9 @@ from pyspark.sql.types import StructType
 @dataclass
 class StageConfig:
     """
-    Configuration for processing in a specific zone
+    Configuration for processing in a specific stage/zone
     
-    Zones can be: landing -> bronze -> silver -> gold, or any custom zones
+    Stage examples: landing -> bronze -> silver -> gold, or any custom stages/zones
     """
     mode: Literal['append', 'upsert'] = 'append'
     merge_keys: Optional[List[str]] = None  # Required if mode='upsert'
@@ -25,7 +25,7 @@ class StageConfig:
 @dataclass
 class FlowConfig:
     """
-    Complete configuration for a source table across all zones
+    Complete configuration for a source table across all stages/zones
     
     Zone-agnostic design allows flexibility in pipeline architecture.
     Each table defines behavior per zone (bronze, silver, gold, etc.)
@@ -36,7 +36,7 @@ class FlowConfig:
     schema: StructType
     
     # Source Configuration
-    format: Literal['parquet', 'json', 'csv'] = 'parquet'
+    format: Literal['parquet', 'json', 'csv', 'kafka', 'eventhub'] = 'parquet'
     source_uri: Optional[str] = None
     
     # Zone Configurations - flexible for any zone architecture

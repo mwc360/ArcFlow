@@ -4,6 +4,12 @@ This guide will help you set up a local development environment for **ArcFlow** 
 
 ---
 
+## Prerequisites
+
+- [uv](https://docs.astral.sh/uv/) — fast Python package manager
+
+---
+
 ## 🎯 Quick Start
 
 ### 1. Create Development Virtual Environment
@@ -14,19 +20,31 @@ Run the provided PowerShell script to create a development environment:
 .\create_dev_venv.ps1
 ```
 
-This script will:
-- Create a new `venv-dev` virtual environment
-- Install ArcFlow in **editable mode** (`pip install -e .`)
-- Install development dependencies (pytest, pytest-cov)
-- Verify the installation
-
-### 2. Activate the Environment
+Or manually with uv:
 
 ```powershell
-.\venv-dev\Scripts\Activate.ps1
+uv sync --group dev
 ```
 
-You should see `(venv-dev)` in your terminal prompt.
+This will:
+- Create a `.venv` virtual environment (if it doesn't exist)
+- Install ArcFlow in **editable mode** with all dev dependencies
+- Lock versions from `uv.lock`
+
+### 2. Run Commands
+
+Use `uv run` to execute commands in the synced environment:
+
+```powershell
+uv run pytest
+uv run python -c "from arcflow import Controller; print('OK')"
+```
+
+Or activate the venv directly:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
 
 ### 3. Start Developing!
 
@@ -36,7 +54,7 @@ Any changes you make to files in `src/arcflow/` will be immediately available - 
 
 ## 🔧 What is Editable Mode?
 
-When you install a package in **editable mode** (also called "development mode"), Python creates a link to your source code instead of copying it. This means:
+When you run `uv sync`, ArcFlow is installed in **editable mode** (development mode). Python creates a link to your source code instead of copying it. This means:
 
 ✅ **Edit** → **Test** → **Repeat** (no reinstall step!)
 ✅ Changes are live immediately
@@ -48,8 +66,8 @@ When you install a package in **editable mode** (also called "development mode")
 # Standard Install (copies files, requires reinstall after changes)
 pip install arcflow-0.1.0-py3-none-any.whl
 
-# Editable Install (links to source, changes are live)
-pip install -e .
+# Editable Install via uv (links to source, changes are live)
+uv sync --group dev
 ```
 
 ---
@@ -73,9 +91,10 @@ ArcFlow/
 ├── examples/
 │   └── arcflow_example.ipynb
 ├── tests/
-├── venv-dev/             ← Development virtual environment
+├── .venv/                ← Development virtual environment (created by uv)
 ├── create_dev_venv.ps1   ← Setup script
-└── pyproject.toml        ← Project configuration
+├── pyproject.toml        ← Project configuration
+└── uv.lock               ← Locked dependency versions
 ```
 
 ---
@@ -111,26 +130,120 @@ Now when you edit `src/arcflow/*.py` and save, the notebook will automatically p
 
 ---
 
+## 🌊 Developing a New Stream Pipeline
+
+ArcFlow has a built-in iterative development flow for Kafka and Event Hubs sources.
+`ZonePipeline.test_input()` and `test_output()` **stream data into a Spark memory view** using
+`trigger(availableNow=True)` — no checkpoints, no Delta writes, row-limited. This lets you
+explore and validate a stream entirely in a notebook before wiring it into the full pipeline.
+
+### Step 1 — Discover the payload (no schema yet)
+
+```python
+from arcflow.pipelines.zone_pipeline import ZonePipeline
+from pipeline_config import tables
+
+pipeline = ZonePipeline(spark=spark, zone="bronze", config={"streaming_enabled": True})
+
+# Streams real messages into memory, returns them as a batch DataFrame
+df = pipeline.test_input(tables["shipment"], raw=True, limit=20)
+df.show(truncate=False)
+```
+
+`raw=True` skips JSON deserialization entirely — you see the raw message body as a string
+alongside all connector metadata columns. No schema is required.
+
+**Kafka metadata columns:** `key`, `topic`, `partition`, `offset`, `timestamp`, `timestampType`, `headers`
+
+**Event Hubs metadata columns:** `offset`, `sequenceNumber`, `enqueuedTime`, `publisher`, `partitionKey`, `properties`, `systemProperties`
+
+> **How it works:** ArcFlow opens a real streaming connection to the broker, reads all
+> backlogged messages using `availableNow` trigger (stops automatically when caught up),
+> writes results to a Spark memory view, then returns a limited batch for inspection.
+> The view (`_arcflow_test_<name>`) persists for follow-up `spark.sql(...)` queries.
+
+---
+
+### Step 2 — Draft a schema and validate deserialization
+
+Add a `schema` to your `FlowConfig` based on what you saw in Step 1, then call `test_input`
+without `raw=True`:
+
+```python
+# raw=False (default) — applies from_json() using FlowConfig.schema
+df = pipeline.test_input(tables["shipment"], limit=20)
+df.printSchema()
+df.show()
+```
+
+If columns are null or missing, refine the `StructType` in `pipeline_config.py` and retry.
+
+---
+
+### Step 3 — Test the transformer
+
+Add a `custom_transform` to the zone's `StageConfig` in `pipeline_config.py`, then call
+`test_output` to see the full result — schema deserialization + transformer + snake_case
+normalisation applied:
+
+```python
+# Applies: from_json(schema) → custom_transform → snake_case → _processing_timestamp
+df = pipeline.test_output(tables["shipment"], limit=20)
+df.show()
+```
+
+> **Memory view:** `_arcflow_test_out_<name>` — persists for further `spark.sql(...)` queries.
+
+---
+
+### Step 4 — Ship it
+
+Once `test_output` looks right:
+
+```python
+from arcflow import Controller
+from pipeline_config import tables
+
+controller = Controller(spark, config, tables)
+controller.run_zone_pipeline("bronze")   # starts the real streaming query
+```
+
+---
+
+### `test_input` / `test_output` reference
+
+| Method | `raw` flag | What runs | Memory view |
+|---|---|---|---|
+| `test_input(..., raw=True)` | No schema needed | Raw bytes → string | `_arcflow_test_<name>` |
+| `test_input(...)` | Schema required | `from_json(schema)` | `_arcflow_test_<name>` |
+| `test_output(...)` | Schema required | `from_json` + transformer + normalise | `_arcflow_test_out_<name>` |
+
+Both methods work for **file-based sources** too (parquet, json, csv) — they use a standard
+batch read with `.limit(limit)` instead of the streaming path. The `raw` flag is ignored for
+file sources.
+
+---
+
 ## 🚀 Running Tests
 
 ### Run all tests:
 ```powershell
-pytest
+uv run pytest
 ```
 
 ### Run with coverage:
 ```powershell
-pytest --cov=arcflow --cov-report=html
+uv run pytest --cov=arcflow --cov-report=html
 ```
 
 ### Run specific test file:
 ```powershell
-pytest tests/test_controller.py
+uv run pytest tests/test_controller.py
 ```
 
 ### Run specific test:
 ```powershell
-pytest tests/test_controller.py::test_function_name
+uv run pytest tests/test_controller.py::test_function_name
 ```
 
 ---
@@ -140,24 +253,21 @@ pytest tests/test_controller.py::test_function_name
 ### Option 1: Launch Jupyter from Dev Environment
 
 ```powershell
-# Activate environment
-.\venv-dev\Scripts\Activate.ps1
-
-# Install jupyter (if not already installed)
-pip install jupyter
+# Install jupyter (if not already a dependency)
+uv add --group dev jupyter
 
 # Launch notebook
-jupyter notebook examples/
+uv run jupyter notebook examples/
 ```
 
 ### Option 2: Add Kernel to VS Code
 
-VS Code can automatically detect and use `venv-dev`:
+VS Code can automatically detect and use `.venv`:
 
 1. Open `examples/arcflow_example.ipynb`
 2. Click the kernel selector (top-right)
 3. Choose "Select Another Kernel" → "Python Environments"
-4. Select `venv-dev (Python 3.x.x)`
+4. Select `.venv (Python 3.x.x)`
 
 ---
 
@@ -165,24 +275,25 @@ VS Code can automatically detect and use `venv-dev`:
 
 ### Check Installed Packages
 ```powershell
-pip list
+uv pip list
 ```
 
 ### Verify Editable Install
 ```powershell
-pip show arcflow
+uv pip show arcflow
 ```
 Look for: `Location: c:\users\...\arcflow\src` (points to your source!)
 
 ### Update Dependencies
 ```powershell
-pip install --upgrade pyspark delta-spark
+uv lock --upgrade-package pyspark
+uv sync --group dev
 ```
 
 ### Rebuild if Needed
 ```powershell
 # Only needed if you change pyproject.toml
-pip install -e . --force-reinstall --no-deps
+uv sync --group dev --reinstall
 ```
 
 ---
@@ -220,22 +331,22 @@ print(sys.executable)
 ## 📊 Example Development Session
 
 ```powershell
-# 1. Activate environment
-.\venv-dev\Scripts\Activate.ps1
+# 1. Sync environment
+uv sync --group dev
 
 # 2. Edit source code
 code src/arcflow/controller.py
 
 # 3. Test changes in Python
-python
+uv run python
 >>> from arcflow import Controller
 >>> # Your changes are live!
 
 # 4. Or run notebook with changes
-jupyter notebook examples/arcflow_example.ipynb
+uv run jupyter notebook examples/arcflow_example.ipynb
 
 # 5. Run tests
-pytest tests/
+uv run pytest tests/
 
 # 6. Make more changes, repeat!
 ```
@@ -244,14 +355,14 @@ pytest tests/
 
 ## 🆚 When to Use Each Environment
 
-### Use `venv-dev` (Editable Install) When:
+### Use `.venv` (uv sync, Editable Install) When:
 ✅ Actively developing ArcFlow
 ✅ Testing changes frequently
 ✅ Debugging issues
 ✅ Adding new features
 ✅ Running tests
 
-### Use `venv-test` (Wheel Install) When:
+### Use Wheel Install When:
 ✅ Testing deployment packages
 ✅ Simulating production environment
 ✅ Validating wheel builds
@@ -261,9 +372,9 @@ pytest tests/
 
 ## 📋 Environment Comparison
 
-| Feature | venv-dev (Editable) | venv-test (Wheel) |
+| Feature | uv sync (Editable) | Wheel Install |
 |---------|---------------------|-------------------|
-| Setup Command | `pip install -e .` | `pip install arcflow-x.x.x.whl` |
+| Setup Command | `uv sync --group dev` | `pip install arcflow-x.x.x.whl` |
 | Code Changes | Live immediately | Requires reinstall |
 | Use Case | Development | Testing deployment |
 | Location | Links to `src/` | Copies to `site-packages/` |
@@ -271,7 +382,7 @@ pytest tests/
 
 ---
 
-## 🔄 Switching Between Environments
+## 🔄 Switching Environments
 
 ### Deactivate Current Environment
 ```powershell
@@ -280,20 +391,15 @@ deactivate
 
 ### Activate Dev Environment
 ```powershell
-.\venv-dev\Scripts\Activate.ps1
-```
-
-### Activate Test Environment
-```powershell
-.\venv-test\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 ```
 
 ---
 
 ## 📚 Next Steps
 
-1. ✅ Create dev environment: `.\create_dev_venv.ps1`
-2. ✅ Activate it: `.\venv-dev\Scripts\Activate.ps1`
+1. ✅ Sync dev environment: `uv sync --group dev` (or `.\create_dev_venv.ps1`)
+2. ✅ Run commands via: `uv run <command>`
 3. ✅ Open notebook: `examples/arcflow_example.ipynb`
 4. ✅ Add autoreload magic: `%load_ext autoreload; %autoreload 2`
 5. ✅ Start coding!
@@ -302,19 +408,20 @@ deactivate
 
 ## 🆘 Troubleshooting
 
-### "pip install -e ." fails
+### "uv sync" fails
 
-Make sure you're in the project root directory:
+Make sure you're in the project root directory and uv is installed:
 ```powershell
 cd c:\Users\milescole\source\ArcFlow
+uv --version
 ```
 
 ### Python can't find arcflow after install
 
 Verify installation:
 ```powershell
-pip show arcflow
-python -c "import arcflow; print(arcflow.__file__)"
+uv pip show arcflow
+uv run python -c "import arcflow; print(arcflow.__file__)"
 ```
 
 ### Autoreload not working in notebook
@@ -330,6 +437,7 @@ Restart the notebook kernel and ensure autoreload is enabled:
 ## 📖 Additional Resources
 
 - **pyproject.toml**: Project configuration and dependencies
+- **uv.lock**: Locked dependency versions
 - **README.md**: High-level project overview
 - **tests/**: Test suite examples
 - **examples/**: Sample notebooks and usage patterns

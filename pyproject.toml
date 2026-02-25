@@ -1,6 +1,6 @@
 [project]
 name = "arcflow"
-version = "0.1.1"
+version = "0.1.3"
 description = "Zone-agnostic PySpark ELT framework for Microsoft Fabric - architect scalable data flows"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,8 +23,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/arcflow"]
 
+[tool.uv.sources]
+lakegen = { path = "lakegen-0.1.1-py3-none-any.whl" }
+
 [dependency-groups]
 dev = [
+    "lakegen",
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
 ]

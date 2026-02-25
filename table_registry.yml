@@ -1,0 +1,12 @@
+tables:
+  - name: table_1
+    description: This is the first table.
+    destination: my_database.table_1
+    load_group: group_1
+    dependencies: []
+  - name: table_2
+    description: This is the second table.
+    destination: my_database.table_2
+    load_group: group_1
+    dependencies:
+      - table_1
