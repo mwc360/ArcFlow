@@ -437,6 +437,7 @@ Restart the notebook kernel and ensure autoreload is enabled:
 ## 📖 Additional Resources
 
 - **pyproject.toml**: Project configuration and dependencies
+- **uv.lock**: Locked dependency versions
 - **README.md**: High-level project overview
 - **tests/**: Test suite examples
 - **examples/**: Sample notebooks and usage patterns
