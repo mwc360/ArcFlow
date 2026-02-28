@@ -198,23 +198,30 @@ class Controller:
             if target_group is None:
                 continue
 
-            if len(target_group) == 1:
-                # Single-stage: use existing path
-                pipeline = ZonePipeline(
-                    spark=self.spark, zone=zone, config=self.config
+            try:
+                if len(target_group) == 1:
+                    # Single-stage: use existing path
+                    pipeline = ZonePipeline(
+                        spark=self.spark, zone=zone, config=self.config
+                    )
+                    query = pipeline.process_table(table_config)
+                    if query:
+                        queries.append(query)
+                else:
+                    # Multi-stage group: use primary stage's zone for the read
+                    primary_zone = target_group[0][0]
+                    pipeline = ZonePipeline(
+                        spark=self.spark, zone=primary_zone, config=self.config
+                    )
+                    query = pipeline.process_table_group(table_config, target_group)
+                    if query:
+                        queries.append(query)
+            except Exception as e:
+                if self.config.get('fail_fast', True):
+                    raise
+                self.logger.error(
+                    f"Failed to start {table_config.name} for {zone} zone: {e}"
                 )
-                query = pipeline.process_table(table_config)
-                if query:
-                    queries.append(query)
-            else:
-                # Multi-stage group: use primary stage's zone for the read
-                primary_zone = target_group[0][0]
-                pipeline = ZonePipeline(
-                    spark=self.spark, zone=primary_zone, config=self.config
-                )
-                query = pipeline.process_table_group(table_config, target_group)
-                if query:
-                    queries.append(query)
 
             # Mark all stages in the group as processed
             for s_name, _ in target_group:
@@ -431,7 +438,7 @@ class Controller:
             return []
         
         self.logger.info(f"Spawning {len(configs)} tables for {zone} zone (availableNow)")
-        queries = pipeline.process_all(configs, continue_on_error=recovery)
+        queries = pipeline.process_all(configs, recovery=recovery)
         
         for query in queries:
             self.stream_manager.register(query, zone=zone)

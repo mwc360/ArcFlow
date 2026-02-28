@@ -488,19 +488,21 @@ class ZonePipeline:
     def process_all(
         self,
         table_configs: List[FlowConfig],
-        continue_on_error: bool = False,
+        recovery: bool = False,
     ) -> List[StreamingQuery]:
         """
         Process all tables for this zone
         
         Args:
             table_configs: List of FlowConfig instances
-            continue_on_error: If True, log and skip tables that fail
-                (used during recovery when upstream tables may not exist yet)
+            recovery: If True, log skipped tables at INFO level (upstream may
+                not exist yet on first run). Otherwise respects the ``fail_fast``
+                config: raise on failure when True, log at ERROR when False.
             
         Returns:
-            List of StreamingQuery instances
+            List of StreamingQuery instances that started successfully
         """
+        fail_fast = self.config.get('fail_fast', True) and not recovery
         queries = []
         for config in table_configs:
             try:
@@ -508,11 +510,15 @@ class ZonePipeline:
                 if query:
                     queries.append(query)
             except Exception as e:
-                if continue_on_error:
+                if fail_fast:
+                    raise
+                if recovery:
                     self.logger.info(
                         f"Skipping {config.name} for {self.zone} zone — "
                         f"upstream not yet available, will be triggered by chain listener"
                     )
-                    continue
-                raise
+                else:
+                    self.logger.error(
+                        f"Failed to start {config.name} for {self.zone} zone: {e}"
+                    )
         return queries

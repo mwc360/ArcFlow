@@ -33,6 +33,7 @@ class Defaults:
     TRIGGER_INTERVAL: str = "60 seconds"
     AWAIT_TERMINATION: bool = False  # False for notebooks, True for production Spark jobs
     EVENT_DRIVEN_CHAINING: bool = True  # Cascade downstream zones via StreamingQueryListener
+    FAIL_FAST: bool = True  # True: raise on first stream failure. False: log and continue.
     
     # =========================================================================
     # Delta Lake Configuration
@@ -76,6 +77,7 @@ class Defaults:
             'trigger_interval': cls.TRIGGER_INTERVAL,
             'await_termination': cls.AWAIT_TERMINATION,
             'event_driven_chaining': cls.EVENT_DRIVEN_CHAINING,
+            'fail_fast': cls.FAIL_FAST,
             
             # Delta Lake
             'optimize_write': cls.OPTIMIZE_WRITE,
