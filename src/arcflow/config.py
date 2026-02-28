@@ -32,6 +32,7 @@ class Defaults:
     MAX_FILES_PER_TRIGGER: int = 1000
     TRIGGER_INTERVAL: str = "60 seconds"
     AWAIT_TERMINATION: bool = False  # False for notebooks, True for production Spark jobs
+    EVENT_DRIVEN_CHAINING: bool = True  # Cascade downstream zones via StreamingQueryListener
     
     # =========================================================================
     # Delta Lake Configuration
@@ -74,6 +75,7 @@ class Defaults:
             'max_files_per_trigger': cls.MAX_FILES_PER_TRIGGER,
             'trigger_interval': cls.TRIGGER_INTERVAL,
             'await_termination': cls.AWAIT_TERMINATION,
+            'event_driven_chaining': cls.EVENT_DRIVEN_CHAINING,
             
             # Delta Lake
             'optimize_write': cls.OPTIMIZE_WRITE,

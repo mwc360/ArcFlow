@@ -4,7 +4,7 @@ Zone-agnostic pipeline - works for any zone (bronze, silver, gold, etc.)
 Replaces separate BronzePipeline, SilverPipeline, GoldPipeline with one flexible class
 """
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.streaming import StreamingQuery
 
@@ -66,33 +66,53 @@ class ZonePipeline:
     def _get_source_zone(self, table_config: FlowConfig) -> Optional[str]:
         """
         Calculate the source zone for a given target zone.
-        Returns the previous zone in the zones dict, or None if it's the first zone.
+
+        If the stage has ``stage_input`` set, it takes precedence:
+        - stage_input == FlowConfig.name → root (returns None)
+        - stage_input == another stage name → that stage's output
+
+        Otherwise follows the **main chain** (stages without ``stage_input``,
+        in dict order).  Branches are skipped so they don't shift the chain.
 
         Args:
             table_config: FlowConfig with zones defined
-            current_zone: The target zone name (e.g., 'silver')
 
         Returns:
             Name of source zone (e.g., 'bronze') or None if reading from landing
-
-        Example:
-            zones = {'bronze': ..., 'silver': ..., 'gold': ...}
-            get_source_zone(config, 'silver')  # Returns 'bronze'
-            get_source_zone(config, 'bronze')  # Returns None (read from landing)
         """
-        zone_names = list(table_config.zones.keys())
+        zone_config = table_config.zones.get(self.zone)
+        if zone_config is None:
+            raise ValueError(
+                f"Zone '{self.zone}' not found in table config. "
+                f"Available: {list(table_config.zones.keys())}"
+            )
 
-        if self.zone not in zone_names:
-            raise ValueError(f"Zone '{self.zone}' not found in table config. Available: {zone_names}")
+        # Explicit stage_input overrides dict-order resolution
+        if zone_config.stage_input is not None:
+            if zone_config.stage_input == table_config.name:
+                return None  # root source
+            if zone_config.stage_input in table_config.zones:
+                return zone_config.stage_input
+            raise ValueError(
+                f"stage_input '{zone_config.stage_input}' for stage '{self.zone}' "
+                f"is not a valid stage name or FlowConfig.name ('{table_config.name}'). "
+                f"Available stages: {list(table_config.zones.keys())}"
+            )
 
-        current_index = zone_names.index(self.zone)
+        # Main chain: only stages without stage_input, in dict order
+        main_chain = [
+            name for name, cfg in table_config.zones.items()
+            if cfg.stage_input is None
+        ]
 
-        if current_index == 0:
-            # First zone - read from landing
-            return None
-        else:
-            # Return previous zone
-            return zone_names[current_index - 1]
+        if self.zone not in main_chain:
+            # Should not happen — stage_input is None so it must be in main_chain
+            raise ValueError(f"Zone '{self.zone}' not in main chain: {main_chain}")
+
+        idx = main_chain.index(self.zone)
+        if idx == 0:
+            return None  # first in chain → root
+        return main_chain[idx - 1]
         
     def _get_catalog(self, table_config: FlowConfig, zone) -> Optional[str]:
         """
@@ -116,7 +136,7 @@ class ZonePipeline:
             zone: Zone name
         """
         zone_config = table_config.get_zone_config(zone)
-        if zone_config and hasattr(zone_config, 'schema_name'):
+        if zone_config and zone_config.schema_name is not None:
             return zone_config.schema_name
         return zone
     
@@ -418,19 +438,81 @@ class ZonePipeline:
             self.logger.error(f"Failed to process {table_config.name}: {e}")
             raise
     
-    def process_all(self, table_configs: List[FlowConfig]) -> List[StreamingQuery]:
+    def process_table_group(
+        self,
+        table_config: FlowConfig,
+        stages: List[Tuple[str, StageConfig]],
+    ) -> Optional[StreamingQuery]:
+        """
+        Process a group of stages that share the same input in one streaming query.
+
+        Reads from the shared source once, then delegates to a multi-target writer
+        that applies each stage's ``custom_transform`` inside a ``foreachBatch``.
+
+        Args:
+            table_config: FlowConfig instance
+            stages: List of (stage_name, StageConfig) tuples sharing the same input
+
+        Returns:
+            StreamingQuery if streaming, None if batch
+        """
+        stage_names = [s[0] for s in stages]
+        self.logger.info(
+            f"Processing multi-target group for {table_config.name}: {stage_names}"
+        )
+
+        try:
+            # Read once from the shared source (uses self.zone for resolution)
+            df = self.read_source(table_config)
+
+            # Write to all targets via multi-target writer
+            writer_factory = WriterFactory(self.spark, self.is_streaming, self.config)
+            # Use the first stage to create the writer (config-level settings)
+            writer = writer_factory.create_writer(table_config, stages[0][1])
+            query = writer.write_multi(
+                df, table_config, stages, self.zone, self.config
+            )
+
+            self.logger.info(
+                f"Successfully set up multi-target pipeline for "
+                f"{table_config.name} → {stage_names}"
+            )
+            return query
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to process multi-target group for {table_config.name}: {e}"
+            )
+            raise
+
+    def process_all(
+        self,
+        table_configs: List[FlowConfig],
+        continue_on_error: bool = False,
+    ) -> List[StreamingQuery]:
         """
         Process all tables for this zone
         
         Args:
             table_configs: List of FlowConfig instances
+            continue_on_error: If True, log and skip tables that fail
+                (used during recovery when upstream tables may not exist yet)
             
         Returns:
             List of StreamingQuery instances
         """
         queries = []
         for config in table_configs:
-            query = self.process_table(config)
-            if query:
-                queries.append(query)
+            try:
+                query = self.process_table(config)
+                if query:
+                    queries.append(query)
+            except Exception as e:
+                if continue_on_error:
+                    self.logger.info(
+                        f"Skipping {config.name} for {self.zone} zone — "
+                        f"upstream not yet available, will be triggered by chain listener"
+                    )
+                    continue
+                raise
         return queries
