@@ -20,6 +20,9 @@ class StageConfig:
     partition_by: Optional[List[str]] = None
     custom_transform: Optional[str] = None  # Name of custom transformation function
     enabled: bool = True
+    stage_input: Optional[str] = None  # Input source: stage name (read output) or FlowConfig.name (root)
+    table_name: Optional[str] = None   # Override target table name (defaults to FlowConfig.name)
+    schema_name: Optional[str] = None  # Override target schema (defaults to zone/stage name)
 
 
 @dataclass

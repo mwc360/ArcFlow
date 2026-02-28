@@ -19,18 +19,23 @@ class StreamManager:
     
     def __init__(self):
         self.queries: List[StreamingQuery] = []
+        self._zone_queries: Dict[str, List[StreamingQuery]] = {}
         self.logger = logging.getLogger(__name__)
     
-    def register(self, query: Optional[StreamingQuery]):
+    def register(self, query: Optional[StreamingQuery], zone: Optional[str] = None):
         """
         Register a streaming query for management
         
         Args:
             query: StreamingQuery instance (None for batch queries)
+            zone: Optional zone name for zone-aware tracking
         """
         if query is not None:
             self.queries.append(query)
-            self.logger.info(f"Registered query: {query.name}")
+            if zone is not None:
+                self._zone_queries.setdefault(zone, []).append(query)
+            self.logger.info(f"Registered query: {query.name}"
+                           + (f" (zone={zone})" if zone else ""))
     
     def has_queries(self) -> bool:
         """Check if any queries are registered"""
@@ -62,7 +67,7 @@ class StreamManager:
                 raise
     
     def stop_all(self):
-        """Stop all active queries gracefully"""
+        """Stop all active queries gracefully and clear internal state"""
         self.logger.info(f"Stopping {len(self.queries)} streaming queries...")
         
         for query in self.queries:
@@ -72,6 +77,9 @@ class StreamManager:
                     query.stop()
             except Exception as e:
                 self.logger.error(f"Error stopping {query.name}: {e}")
+        
+        self.queries.clear()
+        self._zone_queries.clear()
     
     def get_status(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -101,3 +109,11 @@ class StreamManager:
     def get_inactive_queries(self) -> List[StreamingQuery]:
         """Get list of inactive/completed queries"""
         return [q for q in self.queries if not q.isActive]
+    
+    def get_zone_queries(self, zone: str) -> List[StreamingQuery]:
+        """Get all queries registered for a specific zone"""
+        return list(self._zone_queries.get(zone, []))
+    
+    def has_active_zone_queries(self, zone: str) -> bool:
+        """Check if any queries for a zone are still active"""
+        return any(q.isActive for q in self._zone_queries.get(zone, []))

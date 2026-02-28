@@ -12,6 +12,7 @@ src/arcflow/
 ├── core/
 │   ├── spark_session.py       # SparkSession factory helpers
 │   ├── spark_configurator.py  # Auto-applies best-practice Spark configs
+│   ├── stage_chain_listener.py # Event-driven downstream stage triggering via StreamingQueryListener
 │   └── stream_manager.py      # Tracks/awaits/stops StreamingQuery instances
 ├── pipelines/
 │   ├── zone_pipeline.py       # Single-source zone processing (landing→bronze, etc.)
@@ -51,7 +52,7 @@ Tests live in `tests/`. Reference files for test assertions are in `test_ref_fil
 ## Core Models (`models.py`)
 
 - **`FlowConfig`** — defines one source → one Delta table. Key fields: `name`, `schema` (StructType), `format` (`parquet|json|csv|kafka|eventhub`), `source_uri`, `zones` (dict of StageConfig), `trigger_mode`, `trigger_interval`, `reader_options`.
-- **`StageConfig`** — per-zone behaviour: `mode` (`append|upsert`), `merge_keys` (required for upsert), `partition_by`, `custom_transform` (string name of function in `transformations/`), `enabled`.
+- **`StageConfig`** — per-zone behaviour: `mode` (`append|upsert`), `merge_keys` (required for upsert), `partition_by`, `custom_transform` (string name of function in `transformations/`), `enabled`, `stage_input` (declares input source for multi-target), `table_name` (override target table), `schema_name` (override target schema).
 - **`DimensionConfig`** — multiple sources → one enriched table. Reads from `source_zone`, applies a named `transform`, writes to `target_zone`.
 
 ## Readers
@@ -119,6 +120,62 @@ controller.get_status()                    # dict of stream statuses
 
 Controller auto-applies best-practice Spark configs via `SparkConfigurator` on init. Disable with `autoset_spark_configs=False`.
 
+### Event-Driven Stage Chaining
+
+By default (`event_driven_chaining=True`), `run_full_pipeline` uses a `StageChainListener` (Spark `StreamingQueryListener`) to cascade downstream zones. The first zone runs with its configured trigger; downstream zones are automatically spawned as `availableNow` when upstream produces data.
+
+- **processingTime bronze:** Each micro-batch that produces rows triggers downstream.
+- **availableNow bronze:** Downstream triggers after all bronze queries terminate.
+- **Dedup:** If a downstream zone is already running, a pending re-trigger flag is set.
+- **Recovery:** On startup, all downstream zones are spawned once as `availableNow` to catch up on pending data from prior failed runs.
+- **Dimensions** are excluded from chaining — they run after all zones (or manually).
+
+```python
+# Event-driven (default) — downstream zones auto-triggered
+config = get_config({'event_driven_chaining': True})    # default
+
+# Legacy sequential — all zones started upfront
+config = get_config({'event_driven_chaining': False})
+```
+
+### Multi-Target Output (`stage_input`)
+
+Write one source read to multiple Delta tables in a single streaming query via `foreachBatch`. Use `stage_input` on `StageConfig` to declare where a stage reads from:
+
+| `stage_input` value | Meaning |
+|---|---|
+| `None` (default) | Sequential chain — first zone reads from root, subsequent from previous primary |
+| FlowConfig.name (e.g. `'item'`) | Read from root source (Kafka/EventHub/files) |
+| Stage name (e.g. `'bronze'`) | Read from that stage's Delta output |
+
+Stages resolving to the same input are **auto-grouped** into one `foreachBatch` query. Each stage applies its own `custom_transform` independently per micro-batch.
+
+**Main chain rule:** Stages with `stage_input` set are **branches** — they're skipped when determining the sequential chain for stages with `stage_input=None`.
+
+```python
+# Root fan-out: archive raw + transform bronze
+FlowConfig(name='item', ..., zones={
+    "bronze": StageConfig(mode='append', custom_transform='explode_data'),
+    "raw_archive": StageConfig(mode='append', stage_input='item', schema_name='archive'),
+    "silver": StageConfig(mode='append', custom_transform='silver_transform'),
+})
+# bronze + raw_archive grouped (both read from root) → one foreachBatch
+# silver reads from bronze output (main chain)
+
+# Mid-pipeline fan-out: two silver tables from bronze
+FlowConfig(name='item', ..., zones={
+    "bronze": StageConfig(mode='append', custom_transform='explode_data'),
+    "silver_orders": StageConfig(mode='upsert', merge_keys=['order_id'], custom_transform='extract_orders'),
+    "silver_items": StageConfig(mode='append', stage_input='bronze', table_name='order_items',
+                                custom_transform='extract_order_items'),
+})
+# silver_orders + silver_items grouped (both read from bronze) → one foreachBatch
+```
+
+Additional `StageConfig` fields for multi-target:
+- `table_name: Optional[str]` — override target table name (defaults to `FlowConfig.name`)
+- `schema_name: Optional[str]` — override target schema (defaults to stage/zone name)
+
 ## Spark Configurator (`core/spark_configurator.py`)
 
 Applied automatically by Controller. Never overwrites configs already set on the session.
@@ -159,7 +216,7 @@ config = get_config({
 })
 ```
 
-Key config keys: `landing_uri`, `archive_uri`, `checkpoint_uri`, `streaming_enabled`, `trigger_interval`, `await_termination`, `optimize_write`, `auto_compact`.
+Key config keys: `landing_uri`, `archive_uri`, `checkpoint_uri`, `streaming_enabled`, `trigger_interval`, `await_termination`, `event_driven_chaining`, `optimize_write`, `auto_compact`.
 
 ## Coding Conventions
 
