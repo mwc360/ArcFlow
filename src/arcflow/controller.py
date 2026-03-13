@@ -502,11 +502,15 @@ class Controller:
         self._processed_stages.clear()
         self.logger.info("All streams stopped")
     
-    def get_status(self) -> Dict:
+    def get_status(self, as_dataframe: bool = False):
         """
         Get status of all streaming queries
         
+        Args:
+            as_dataframe: If True, return a pandas DataFrame with flattened
+                metrics. Defaults to False (dict output).
+        
         Returns:
-            Dict with query statuses
+            Dict with query statuses, or a pandas DataFrame
         """
-        return self.stream_manager.get_status()
+        return self.stream_manager.get_status(as_dataframe=as_dataframe)

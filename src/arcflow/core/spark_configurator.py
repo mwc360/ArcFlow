@@ -112,10 +112,10 @@ class SparkConfigurator:
                 logger.debug(f"[SparkConfigurator] failed to unset {key}: {e}")
                 failed.append(key)
 
-        # Remove unset keys from the defaults so they aren't re-applied
+        # Remove unset keys and None-valued defaults so they aren't re-applied
         configs_to_set = {
             k: v for k, v in {**cls.BEST_PRACTICE_CONFIGS, **overrides}.items()
-            if k not in unset_keys
+            if k not in unset_keys and v is not None
         }
 
         for key, value in configs_to_set.items():

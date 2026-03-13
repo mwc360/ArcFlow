@@ -185,3 +185,93 @@ class TestStreamManagerClearOnStop:
         assert len(sm._zone_queries) == 0
         q1.stop.assert_called_once()
         q2.stop.assert_not_called()  # was not active
+
+
+class TestGetStatusAsDataFrame:
+    def _make_query(self, name, active=True, batch_id=5, num_rows=100):
+        q = MagicMock()
+        q.name = name
+        q.isActive = active
+        q.id = f"id-{name}"
+        q.runId = f"run-{name}"
+        q.recentProgress = [{
+            'batchId': batch_id,
+            'numInputRows': num_rows,
+            'inputRowsPerSecond': 50.0,
+            'processedRowsPerSecond': 80.0,
+            'timestamp': '2026-03-13T07:00:00.000Z',
+            'durationMs': {'addBatch': 200, 'triggerExecution': 500},
+        }]
+        return q
+
+    def test_default_returns_dict(self):
+        from arcflow.core.stream_manager import StreamManager
+        sm = StreamManager()
+        q = self._make_query("bronze_stream")
+        sm.register(q, zone="bronze")
+
+        result = sm.get_status()
+        assert isinstance(result, dict)
+        assert "bronze_stream" in result
+
+    def test_as_dataframe_returns_pandas(self):
+        import pandas as pd
+        from arcflow.core.stream_manager import StreamManager
+        sm = StreamManager()
+        sm.register(self._make_query("bronze_stream", active=True, num_rows=100), zone="bronze")
+        sm.register(self._make_query("silver_stream", active=False, num_rows=0), zone="silver")
+
+        df = sm.get_status(as_dataframe=True)
+
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 2
+        assert list(df['query_name']) == ['bronze_stream', 'silver_stream']
+        assert list(df['active']) == [True, False]
+        assert list(df['num_input_rows']) == [100, 0]
+        assert 'duration_ms_addBatch' in df.columns
+        assert 'duration_ms_triggerExecution' in df.columns
+
+    def test_as_dataframe_no_progress(self):
+        import pandas as pd
+        from arcflow.core.stream_manager import StreamManager
+        sm = StreamManager()
+        q = MagicMock()
+        q.name = "stale_stream"
+        q.isActive = False
+        q.id = "id-stale"
+        q.runId = "run-stale"
+        q.recentProgress = []
+        sm.register(q, zone="bronze")
+
+        df = sm.get_status(as_dataframe=True)
+
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 1
+        assert df.iloc[0]['num_input_rows'] is None
+        assert df.iloc[0]['batch_id'] is None
+
+    def test_as_dataframe_empty(self):
+        import pandas as pd
+        from arcflow.core.stream_manager import StreamManager
+        sm = StreamManager()
+
+        df = sm.get_status(as_dataframe=True)
+
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 0
+
+    def test_as_dataframe_error_query(self):
+        import pandas as pd
+        from arcflow.core.stream_manager import StreamManager
+        sm = StreamManager()
+        q = MagicMock()
+        q.name = "broken_stream"
+        type(q).isActive = PropertyMock(side_effect=RuntimeError("connection lost"))
+        sm.register(q, zone="bronze")
+
+        df = sm.get_status(as_dataframe=True)
+
+        assert isinstance(df, pd.DataFrame)
+        assert len(df) == 1
+        assert 'error' in df.columns
+        assert 'connection lost' in df.iloc[0]['error']

@@ -2,7 +2,7 @@
 Stream manager for tracking and managing streaming queries
 """
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from pyspark.sql.streaming import StreamingQuery
 
 
@@ -81,26 +81,76 @@ class StreamManager:
         self.queries.clear()
         self._zone_queries.clear()
     
-    def get_status(self) -> Dict[str, Dict[str, Any]]:
+    def get_status(self, as_dataframe: bool = False) -> Union[Dict[str, Dict[str, Any]], Any]:
         """
         Get status of all queries
         
+        Args:
+            as_dataframe: If True, return a pandas DataFrame with flattened
+                metrics from recent_progress. Defaults to False (dict output).
+        
         Returns:
-            Dict mapping query name to status info
+            Dict mapping query name to status info, or a pandas DataFrame
         """
         status = {}
         for query in self.queries:
             try:
+                progress = query.recentProgress[-1] if query.recentProgress else None
                 status[query.name] = {
                     'active': query.isActive,
                     'id': query.id,
                     'runId': query.runId,
-                    'recent_progress': query.recentProgress[-1] if query.recentProgress else None
+                    'recent_progress': progress,
                 }
             except Exception as e:
                 status[query.name] = {'error': str(e)}
         
-        return status
+        if not as_dataframe:
+            return status
+
+        return self._status_to_dataframe(status)
+
+    @staticmethod
+    def _status_to_dataframe(status: Dict[str, Dict[str, Any]]):
+        """Convert status dict to a pandas DataFrame with flattened progress metrics."""
+        import pandas as pd
+
+        rows = []
+        for query_name, info in status.items():
+            if 'error' in info:
+                rows.append({'query_name': query_name, 'error': info['error']})
+                continue
+
+            progress = info.get('recent_progress')
+            row: Dict[str, Any] = {
+                'query_name': query_name,
+                'active': info.get('active'),
+                'id': str(info.get('id', '')),
+                'run_id': str(info.get('runId', '')),
+            }
+
+            if progress is not None:
+                row['batch_id'] = getattr(progress, 'batchId', None) if not isinstance(progress, dict) else progress.get('batchId')
+                row['num_input_rows'] = getattr(progress, 'numInputRows', None) if not isinstance(progress, dict) else progress.get('numInputRows')
+                row['input_rows_per_second'] = getattr(progress, 'inputRowsPerSecond', None) if not isinstance(progress, dict) else progress.get('inputRowsPerSecond')
+                row['processed_rows_per_second'] = getattr(progress, 'processedRowsPerSecond', None) if not isinstance(progress, dict) else progress.get('processedRowsPerSecond')
+                row['timestamp'] = getattr(progress, 'timestamp', None) if not isinstance(progress, dict) else progress.get('timestamp')
+
+                # Flatten durationMs
+                duration = getattr(progress, 'durationMs', None) if not isinstance(progress, dict) else progress.get('durationMs')
+                if isinstance(duration, dict):
+                    for k, v in duration.items():
+                        row[f'duration_ms_{k}'] = v
+            else:
+                row.update({
+                    'batch_id': None, 'num_input_rows': None,
+                    'input_rows_per_second': None, 'processed_rows_per_second': None,
+                    'timestamp': None,
+                })
+
+            rows.append(row)
+
+        return pd.DataFrame(rows)
     
     def get_active_queries(self) -> List[StreamingQuery]:
         """Get list of currently active queries"""
