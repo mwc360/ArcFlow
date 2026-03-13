@@ -140,6 +140,20 @@ class ZonePipeline:
             return zone_config.schema_name
         return zone
     
+    def _get_table_name(self, table_config: FlowConfig, zone) -> str:
+        """
+        Get target table name for a given zone from table config.
+
+        Args:
+            table_config: FlowConfig instance
+            zone: Zone name
+        """
+        if zone is not None:
+            zone_config = table_config.get_zone_config(zone)
+            if zone_config and zone_config.table_name is not None:
+                return zone_config.table_name
+        return table_config.name
+
     def read_source(self, table_config: FlowConfig) -> DataFrame:
         """
         Read from source - either landing zone or previous zone
@@ -153,7 +167,8 @@ class ZonePipeline:
         source_zone = self._get_source_zone(table_config)
         source_catalog = self._get_catalog(table_config, source_zone)
         source_schema = self._get_schema(table_config, source_zone)
-        table_reference = build_table_reference(source_catalog, source_schema, table_config.name)
+        source_table = self._get_table_name(table_config, source_zone)
+        table_reference = build_table_reference(source_catalog, source_schema, source_table)
 
         if source_zone:
             # Read from previous zone (e.g., silver reads from bronze)
@@ -215,6 +230,40 @@ class ZonePipeline:
         
         return df
     
+    def _get_upstream_zones(self, table_config: FlowConfig) -> List[str]:
+        """
+        Return the ordered list of zones in the main chain before this zone.
+
+        For example, if the main chain is [bronze, silver, gold] and self.zone
+        is 'silver', returns ['bronze'].  If self.zone is 'bronze', returns [].
+        """
+        main_chain = [
+            name for name, cfg in table_config.zones.items()
+            if cfg.stage_input is None
+        ]
+        if self.zone not in main_chain:
+            return []
+        idx = main_chain.index(self.zone)
+        return main_chain[:idx]
+
+    def _apply_upstream_transforms(
+        self,
+        df: DataFrame,
+        table_config: FlowConfig,
+    ) -> DataFrame:
+        """
+        Apply transformations for every zone upstream of this zone in the main chain.
+
+        This allows ``test_input`` / ``test_output`` to read from the root source
+        and replay the full transform chain without requiring persisted Delta tables.
+        """
+        for zone_name in self._get_upstream_zones(table_config):
+            zone_config = table_config.get_zone_config(zone_name)
+            if zone_config and zone_config.enabled:
+                self.logger.info(f"Chaining upstream transforms for {zone_name}")
+                df = self.apply_transformations(df, table_config, zone_config)
+        return df
+
     def _stream_to_memory(
         self,
         streaming_df: DataFrame,
@@ -299,17 +348,20 @@ class ZonePipeline:
             reader = ReaderFactory(self.spark, True, self.config).create_reader(table_config)
             try:
                 streaming_df = reader.read(table_config, raw=raw, max_records=limit)
+                if not raw:
+                    streaming_df = self._apply_upstream_transforms(streaming_df, table_config)
             except Exception as e:
                 self.logger.error(f"Failed to read {table_config.name}: {e}")
                 raise
             view_name = f"_arcflow_test_{table_config.name}"
             return self._stream_to_memory(streaming_df, view_name, limit, timeout_seconds)
 
-        # File-based sources — existing batch path
+        # File-based sources — batch path
         original_streaming = self.is_streaming
         self.is_streaming = False
         try:
             df = self.read_source(table_config)
+            df = self._apply_upstream_transforms(df, table_config)
             self.logger.info(f"Successfully generated test input for {table_config.name}")
             return df.limit(limit)
         except Exception as e:
@@ -361,6 +413,7 @@ class ZonePipeline:
             reader = ReaderFactory(self.spark, True, self.config).create_reader(table_config)
             try:
                 streaming_df = reader.read(table_config, raw=False, max_records=limit)
+                streaming_df = self._apply_upstream_transforms(streaming_df, table_config)
                 streaming_df = self.apply_transformations(streaming_df, table_config, zone_config)
             except Exception as e:
                 self.logger.error(f"Failed to build pipeline for {table_config.name}: {e}")
@@ -368,11 +421,12 @@ class ZonePipeline:
             view_name = f"_arcflow_test_out_{table_config.name}"
             return self._stream_to_memory(streaming_df, view_name, limit, timeout_seconds)
 
-        # File-based sources — existing batch path
+        # File-based sources — batch path
         original_streaming = self.is_streaming
         self.is_streaming = False
         try:
             df = self.read_source(table_config)
+            df = self._apply_upstream_transforms(df, table_config)
             df = self.apply_transformations(df, table_config, zone_config)
             self.logger.info(f"Successfully generated test output for {table_config.name}")
             return df.limit(limit)
@@ -391,6 +445,10 @@ class ZonePipeline:
         """
         Write to target zone
         
+        Downstream zones (those reading from a prior zone's Delta output)
+        always use availableNow trigger — only the root zone polls the
+        external source with the configured trigger_mode.
+        
         Args:
             df: DataFrame to write
             table_config: FlowConfig instance
@@ -399,7 +457,14 @@ class ZonePipeline:
         Returns:
             StreamingQuery if streaming, None if batch
         """
-        writer_factory = WriterFactory(self.spark, self.is_streaming, self.config)
+        # Force availableNow for downstream zones
+        source_zone = self._get_source_zone(table_config)
+        if source_zone is not None:
+            config = {**self.config, '_trigger_mode_override': 'availableNow'}
+        else:
+            config = self.config
+
+        writer_factory = WriterFactory(self.spark, self.is_streaming, config)
         writer = writer_factory.create_writer(table_config, zone_config)
         return writer.write(df, table_config, zone_config, self.zone)
     
@@ -465,12 +530,19 @@ class ZonePipeline:
             # Read once from the shared source (uses self.zone for resolution)
             df = self.read_source(table_config)
 
+            # Force availableNow for downstream zones
+            source_zone = self._get_source_zone(table_config)
+            if source_zone is not None:
+                config = {**self.config, '_trigger_mode_override': 'availableNow'}
+            else:
+                config = self.config
+
             # Write to all targets via multi-target writer
-            writer_factory = WriterFactory(self.spark, self.is_streaming, self.config)
+            writer_factory = WriterFactory(self.spark, self.is_streaming, config)
             # Use the first stage to create the writer (config-level settings)
             writer = writer_factory.create_writer(table_config, stages[0][1])
             query = writer.write_multi(
-                df, table_config, stages, self.zone, self.config
+                df, table_config, stages, self.zone, config
             )
 
             self.logger.info(

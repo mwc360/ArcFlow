@@ -116,8 +116,8 @@ class DeltaWriter(BaseWriter):
             .queryName(f"{zone}_{table_name}_stream")
         )
         
-        # Apply trigger configuration
-        trigger_mode = getattr(table_config, 'trigger_mode', 'availableNow')
+        # Apply trigger configuration (override takes precedence for downstream zones)
+        trigger_mode = self.config.get('_trigger_mode_override') or getattr(table_config, 'trigger_mode', 'availableNow')
         
         # Check table-level trigger_interval first, then fall back to global config
         trigger_interval = table_config.trigger_interval
@@ -332,8 +332,8 @@ class DeltaWriter(BaseWriter):
             .queryName(query_name)
         )
 
-        # Apply trigger from FlowConfig
-        trigger_mode = getattr(table_config, 'trigger_mode', 'availableNow')
+        # Apply trigger (override takes precedence for downstream zones)
+        trigger_mode = self.config.get('_trigger_mode_override') or getattr(table_config, 'trigger_mode', 'availableNow')
         trigger_interval = getattr(table_config, 'trigger_interval', None)
         if trigger_interval is None:
             trigger_interval = self.config.get('trigger_interval', None)

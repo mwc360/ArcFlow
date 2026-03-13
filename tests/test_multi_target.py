@@ -227,6 +227,53 @@ class TestGetSourceZoneWithStageInput:
             pipeline._get_source_zone(fc)
 
 
+# ── ZonePipeline._get_table_name ───────────────────────────────────
+
+
+class TestGetTableName:
+    def test_defaults_to_flow_name(self):
+        from arcflow.pipelines.zone_pipeline import ZonePipeline
+        pipeline = ZonePipeline(MagicMock(), "bronze", {})
+        fc = _flow(name="shipment", zones={"bronze": StageConfig()})
+        assert pipeline._get_table_name(fc, "bronze") == "shipment"
+
+    def test_uses_table_name_override(self):
+        from arcflow.pipelines.zone_pipeline import ZonePipeline
+        pipeline = ZonePipeline(MagicMock(), "silver", {})
+        fc = _flow(name="shipment", zones={
+            "bronze": StageConfig(table_name="shipment_v2"),
+            "silver": StageConfig(),
+        })
+        assert pipeline._get_table_name(fc, "bronze") == "shipment_v2"
+
+    def test_none_zone_returns_flow_name(self):
+        from arcflow.pipelines.zone_pipeline import ZonePipeline
+        pipeline = ZonePipeline(MagicMock(), "bronze", {})
+        fc = _flow(name="shipment", zones={"bronze": StageConfig()})
+        assert pipeline._get_table_name(fc, None) == "shipment"
+
+
+class TestReadSourceUsesOverrides:
+    def test_read_source_uses_schema_name_and_table_name(self):
+        from arcflow.pipelines.zone_pipeline import ZonePipeline
+        spark = MagicMock()
+        pipeline = ZonePipeline(spark, "silver", {"streaming_enabled": False})
+        pipeline.is_streaming = False
+
+        fc = _flow(name="scan_event", zones={
+            "bronze": StageConfig(table_name="scan_event_v2", schema_name="raw_zone"),
+            "silver": StageConfig(),
+        })
+
+        pipeline.read_source(fc)
+
+        # Should read from `raw_zone`.`scan_event_v2`, not `bronze`.`scan_event`
+        spark.read.format.return_value.table.assert_called_once()
+        table_ref = spark.read.format.return_value.table.call_args[0][0]
+        assert "raw_zone" in table_ref
+        assert "scan_event_v2" in table_ref
+
+
 # ── DeltaWriter multi-target helpers ────────────────────────────────
 
 
