@@ -46,9 +46,9 @@ class SparkConfigurator:
         "spark.native.enabled": "true",
         # OSS Features
         "spark.databricks.delta.optimizeWrite.enabled": None,
-        "spark.databricks.delta.optimizeWrite.binSize": "134217728",  # 128 MB
+        "spark.databricks.delta.optimizeWrite.binSize": "128m",
         "spark.databricks.delta.properties.defaults.enableDeletionVectors": "true",
-        "spark.databricks.delta.optimize.maxFileSize": "134217728",  # 128 MB
+        "spark.databricks.delta.optimize.maxFileSize": "128m",
         "spark.sql.parquet.compression.codec": "zstd",
         "spark.databricks.delta.autoCompact.enabled": "true",
         "spark.sql.adaptive.enabled": "true",
