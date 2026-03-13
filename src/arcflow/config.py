@@ -57,6 +57,16 @@ class Defaults:
     SPARK_SQL_ADAPTIVE_ENABLED: bool = True
     AUTOSET_SPARK_CONFIGS: bool = True
     
+    # =========================================================================
+    # Job Lock Configuration
+    # =========================================================================
+    
+    JOB_ID: str = None                          # User-provided job identifier (required to enable lock)
+    JOB_LOCK_ENABLED: bool = False              # Opt-in singleton lock
+    JOB_LOCK_PATH: str = "Files/locks/"         # Base directory for lock files
+    JOB_LOCK_TIMEOUT_SECONDS: int = 3600        # Wait timeout before failing (1 hour)
+    JOB_LOCK_POLL_INTERVAL: int = 30            # Seconds between retry checks
+    
     @classmethod
     def get_default_config(cls) -> Dict[str, Any]:
         """
@@ -90,6 +100,13 @@ class Defaults:
             # Spark
             'spark.sql.shuffle.partitions': cls.SPARK_SHUFFLE_PARTITIONS,
             'spark.sql.adaptive.enabled': cls.SPARK_SQL_ADAPTIVE_ENABLED,
+            
+            # Job Lock
+            'job_id': cls.JOB_ID,
+            'job_lock_enabled': cls.JOB_LOCK_ENABLED,
+            'job_lock_path': cls.JOB_LOCK_PATH,
+            'job_lock_timeout_seconds': cls.JOB_LOCK_TIMEOUT_SECONDS,
+            'job_lock_poll_interval': cls.JOB_LOCK_POLL_INTERVAL,
         }
     
     @classmethod

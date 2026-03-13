@@ -10,6 +10,7 @@ src/arcflow/
 ├── models.py                  # Core dataclasses: FlowConfig, StageConfig, DimensionConfig
 ├── yaml_loader.py             # YAML config loader (alternative to Python dataclasses)
 ├── controller.py              # Orchestrator — entry point for running pipelines
+├── lock.py                    # Singleton job lock (file-based duplicate run prevention)
 ├── core/
 │   ├── spark_session.py       # SparkSession factory helpers
 │   ├── spark_configurator.py  # Auto-applies best-practice Spark configs
@@ -217,7 +218,7 @@ config = get_config({
 })
 ```
 
-Key config keys: `landing_uri`, `archive_uri`, `checkpoint_uri`, `streaming_enabled`, `trigger_interval`, `await_termination`, `event_driven_chaining`, `optimize_write`, `auto_compact`.
+Key config keys: `landing_uri`, `archive_uri`, `checkpoint_uri`, `streaming_enabled`, `trigger_interval`, `await_termination`, `event_driven_chaining`, `optimize_write`, `auto_compact`, `job_id`, `job_lock_enabled`, `job_lock_path`, `job_lock_timeout_seconds`, `job_lock_poll_interval`.
 
 ## YAML Configuration (`yaml_loader.py`)
 
@@ -268,6 +269,31 @@ controller = Controller(spark, config, tables, dimensions)
 - Nested DDL types supported: `STRUCT<...>`, `ARRAY<...>`, `MAP<...>`, `DECIMAL(p,s)`
 
 See `examples/pipeline_config.yml` for a full example.
+
+## Singleton Job Lock (`lock.py`)
+
+File-based singleton lock to prevent duplicate concurrent runs of the same pipeline job. Opt-in via config.
+
+```python
+config = get_config({
+    'job_id': 'shipment-etl-prod',       # unique job identifier (required)
+    'job_lock_enabled': True,             # opt-in
+    'job_lock_path': 'Files/locks/',      # lock file directory
+    'job_lock_timeout_seconds': 1800,     # wait up to 30 min for existing lock
+    'job_lock_poll_interval': 30,         # retry interval while waiting
+})
+controller = Controller(spark, config, tables)
+controller.run_full_pipeline()   # lock auto-acquired/released
+```
+
+- **`JobLock`** — core class. Supports `acquire()` / `release()` and context manager (`with JobLock(...):`)
+- **`JobLockError`** — raised when lock cannot be acquired within timeout
+- **Lock file**: JSON at `<lock_path>/<job_id>.lock` with `job_id`, `acquired_at`, `timeout_seconds`, `instance_id`, `hostname`, `pid`
+- **Instance re-entry**: An auto-generated UUID per process is written to the lock file. Re-creating a Controller in the same session (notebook re-run) silently re-acquires. A different Spark job (separate process) gets a different UUID and will block.
+- **Heartbeat**: Background daemon thread refreshes `acquired_at` every `timeout_seconds // 3` (min 10s) to prevent false stale recovery on long-running jobs
+- **Stale recovery**: If lock file age exceeds the **holder's** recorded `timeout_seconds`, it is auto-recovered
+- **Controller integration**: Lock acquired at start of `run_full_pipeline()` / `run_zone_pipeline()`, released on completion or error. Nested calls skip re-acquisition. `stop_all()` also releases.
+- **Config keys**: `job_id`, `job_lock_enabled` (default `False`), `job_lock_path`, `job_lock_timeout_seconds` (default `3600`), `job_lock_poll_interval` (default `30`)
 
 ## Coding Conventions
 

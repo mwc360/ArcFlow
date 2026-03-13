@@ -37,6 +37,7 @@ Gold (aggregations, business logic, dimensional modeling)
 - **Transformations**: Universal + custom per-table-per-zone
 - **Pipelines**: `ZonePipeline` (single-source), `DimensionPipeline` (multi-source)
 - **Controller**: `Controller` - Coordinates all pipelines
+- **Job Lock**: `JobLock` - Singleton lock to prevent duplicate concurrent runs
 
 ## Installation
 
@@ -212,6 +213,100 @@ def build_equipment_fact(source_tables: dict, dimension_config) -> DataFrame:
                   .join(schedule, ['equipment_id'], 'left')
 ```
 
+## Singleton Job Lock
+
+In production, overlapping scheduled runs or manual re-triggers can cause data corruption, duplicate writes, or checkpoint conflicts. ArcFlow includes a file-based singleton lock to prevent duplicate concurrent runs of the same pipeline job.
+
+The lock is **opt-in** — enable it by setting `job_lock_enabled` and providing a `job_id` in your config.
+
+### Automatic (Controller-integrated)
+
+When enabled, the lock is automatically acquired at the start of `run_full_pipeline()` or `run_zone_pipeline()` and released on completion (or error). Nested calls (e.g., `run_full_pipeline` calling `run_zone_pipeline` internally) do not re-acquire.
+
+```python
+from arcflow import Controller, get_config
+
+config = get_config({
+    'job_id': 'shipment-etl-prod',       # unique identifier for this job
+    'job_lock_enabled': True,             # enable singleton lock
+    'job_lock_path': 'Files/locks/',      # directory for lock files
+    'job_lock_timeout_seconds': 1800,     # wait up to 30 min for existing lock
+    'job_lock_poll_interval': 30,         # check every 30s while waiting
+})
+
+controller = Controller(spark, config, tables)
+controller.run_full_pipeline()   # lock acquired here, released on completion
+controller.stop_all()            # also releases lock if still held
+```
+
+### Manual (Context Manager)
+
+Use `JobLock` directly for fine-grained control:
+
+```python
+from arcflow import JobLock
+
+with JobLock(job_id='my-etl-job', lock_path='Files/locks/', timeout_seconds=600):
+    # Only one instance of this block can run at a time per job_id
+    controller.run_full_pipeline()
+```
+
+### Behavior
+
+| Scenario | Behavior |
+|---|---|
+| Lock not held | Acquire immediately, write lock file |
+| Lock held by another run | Wait and retry every `poll_interval` seconds |
+| Wait exceeds `timeout_seconds` | Raise `JobLockError` |
+| Same process (notebook re-run) | Re-acquire immediately (auto-detected via instance ID) |
+| Lock older than holder's timeout | Auto-recover as stale (log warning) |
+| Corrupt lock file | Treated as stale, auto-recovered |
+| Pipeline error | Lock released in `finally` block |
+| Long-running job | Heartbeat thread refreshes lock file to prevent false stale recovery |
+
+### Session Re-entry
+
+The lock file includes an auto-generated `instance_id` (a UUID created once per Python process at import time). If a new `Controller` is created in the same session — e.g. re-running a notebook cell — it sees its own `instance_id` in the lock file and re-acquires silently. A different Spark job (separate process) gets a different UUID and will block as expected.
+
+```python
+# First run — acquires lock
+controller = Controller(spark, config, tables)
+controller.run_full_pipeline()
+
+# Re-run in same notebook session — re-acquires, no conflict
+controller = Controller(spark, config, tables)
+controller.run_full_pipeline()
+```
+
+### Heartbeat
+
+While the lock is held, a background daemon thread rewrites the lock file every `timeout_seconds // 3` seconds (minimum 10s) to keep `acquired_at` fresh. This prevents a legitimate long-running job from being mistaken for stale by another instance.
+
+### Lock File Format
+
+The lock file (`<lock_path>/<job_id>.lock`) is human-readable JSON for debugging:
+
+```json
+{
+  "job_id": "shipment-etl-prod",
+  "acquired_at": "2026-03-13T22:00:00+00:00",
+  "timeout_seconds": 1800,
+  "instance_id": "notebook-session-abc",
+  "hostname": "spark-worker-01",
+  "pid": 12345
+}
+```
+
+### Configuration Reference
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `job_id` | `str` | `None` | Unique job identifier (required to enable lock) |
+| `job_lock_enabled` | `bool` | `False` | Enable singleton lock |
+| `job_lock_path` | `str` | `"Files/locks/"` | Directory for lock files |
+| `job_lock_timeout_seconds` | `int` | `3600` | Max wait time before failing (seconds) |
+| `job_lock_poll_interval` | `int` | `30` | Retry interval while waiting (seconds) |
+
 ## Development vs Production
 
 ### Development Mode (Batch)
@@ -279,6 +374,7 @@ src/arcflow/
 ├── models.py                        # FlowConfig, DimensionConfig, StageConfig
 ├── yaml_loader.py                   # YAML configuration loader
 ├── controller.py                    # Controller — orchestrates all pipelines
+├── lock.py                          # Singleton job lock (duplicate run prevention)
 ├── main.py                          # Entry point for Spark Job Definition
 │
 ├── core/

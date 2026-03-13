@@ -15,6 +15,7 @@ from .controller import Controller
 from .pipelines.zone_pipeline import ZonePipeline
 from .pipelines.dimension_pipeline import DimensionPipeline
 from .config import Defaults, get_config
+from .lock import JobLock, JobLockError
 from .yaml_loader import load_yaml_config, load_tables, load_dimensions
 from .utils import build_table_reference, parse_table_reference, get_table_identifier
 
@@ -27,6 +28,8 @@ __all__ = [
     'DimensionPipeline',
     'Defaults',
     'get_config',
+    'JobLock',
+    'JobLockError',
     'load_yaml_config',
     'load_tables',
     'load_dimensions',

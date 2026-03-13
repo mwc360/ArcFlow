@@ -15,6 +15,7 @@ from .models import FlowConfig, DimensionConfig, StageConfig
 from .core.stream_manager import StreamManager
 from .core.spark_configurator import SparkConfigurator
 from .core.stage_chain_listener import StageChainListener
+from .lock import JobLock
 from .pipelines.zone_pipeline import ZonePipeline
 from .pipelines.dimension_pipeline import DimensionPipeline
 
@@ -56,6 +57,21 @@ class Controller:
         self.stream_manager = StreamManager()
         self._chain_listener: Optional[StageChainListener] = None
         self._processed_stages: Set[Tuple[str, str]] = set()  # (flow_name, stage_name)
+        
+        # Job lock (opt-in via config)
+        self._job_lock: Optional[JobLock] = None
+        self._lock_held_by_full_pipeline = False
+        if config.get('job_lock_enabled', False):
+            job_id = config.get('job_id')
+            if job_id:
+                self._job_lock = JobLock(
+                    job_id=job_id,
+                    lock_path=config.get('job_lock_path', 'Files/locks/'),
+                    timeout_seconds=config.get('job_lock_timeout_seconds', 3600),
+                    poll_interval=config.get('job_lock_poll_interval', 30),
+                )
+            else:
+                self.logger.warning("job_lock_enabled=True but no job_id provided — lock disabled")
         
         self.logger = logging.getLogger(__name__)
 
@@ -157,6 +173,25 @@ class Controller:
         Returns:
             List of StreamingQuery instances
         """
+        # Acquire job lock if configured and not already held by run_full_pipeline
+        lock_acquired_here = False
+        if self._job_lock and not self._lock_held_by_full_pipeline:
+            self._job_lock.acquire()
+            lock_acquired_here = True
+
+        try:
+            return self._run_zone_pipeline_inner(zone, source_zone, table_subset)
+        finally:
+            if lock_acquired_here:
+                self._job_lock.release()
+
+    def _run_zone_pipeline_inner(
+        self,
+        zone: str,
+        source_zone: Optional[str] = None,
+        table_subset: Optional[List[str]] = None
+    ) -> List[StreamingQuery]:
+        """Inner implementation of run_zone_pipeline (no lock logic)."""
         self.logger.info(f"Starting {zone} pipeline (source: {source_zone or 'landing'})")
         
         # Filter tables
@@ -327,15 +362,29 @@ class Controller:
         if zones is None:
             zones = ['bronze', 'silver', 'gold']
         
-        self.logger.info(f"Starting full pipeline for zones: {zones}")
-        self._processed_stages.clear()
-        
-        use_chaining = self.config.get('event_driven_chaining', True) and self.is_streaming
+        # Acquire job lock if configured
+        if self._job_lock:
+            self._job_lock.acquire()
+            self._lock_held_by_full_pipeline = True
 
-        if use_chaining and len(zones) > 1:
-            self._run_event_driven_pipeline(zones, include_dimensions, await_termination)
+        try:
+            self.logger.info(f"Starting full pipeline for zones: {zones}")
+            self._processed_stages.clear()
+            
+            use_chaining = self.config.get('event_driven_chaining', True) and self.is_streaming
+
+            if use_chaining and len(zones) > 1:
+                self._run_event_driven_pipeline(zones, include_dimensions, await_termination)
+            else:
+                self._run_sequential_pipeline(zones, include_dimensions, await_termination)
+        except Exception:
+            self._release_job_lock()
+            raise
         else:
-            self._run_sequential_pipeline(zones, include_dimensions, await_termination)
+            # For non-streaming or availableNow, release immediately after completion.
+            # For continuous streams, lock is released by stop_all().
+            if not self.is_streaming or not self.stream_manager.get_active_queries():
+                self._release_job_lock()
     
     def _run_sequential_pipeline(
         self,
@@ -485,7 +534,7 @@ class Controller:
             self.logger.info("No streaming queries to await (batch mode)")
     
     def stop_all(self):
-        """Stop all streaming queries, remove the chain listener, and reset state"""
+        """Stop all streaming queries, remove the chain listener, release job lock, and reset state"""
         self.logger.info("Stopping all streams...")
         self.stream_manager.stop_all()
         try:
@@ -500,7 +549,14 @@ class Controller:
                 self.logger.warning(f"Failed to remove StageChainListener: {e}")
             self._chain_listener = None
         self._processed_stages.clear()
+        self._release_job_lock()
         self.logger.info("All streams stopped")
+    
+    def _release_job_lock(self):
+        """Release the job lock if held."""
+        if self._job_lock and self._job_lock.held:
+            self._job_lock.release()
+        self._lock_held_by_full_pipeline = False
     
     def get_status(self, as_dataframe: bool = False):
         """
