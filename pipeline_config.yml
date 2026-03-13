@@ -1,0 +1,901 @@
+tables:
+  item:
+    format: parquet
+    source_uri: Files/landing/item
+    description: Item master data
+    trigger_mode: processingTime
+    clean_source: true
+    schema:
+      type: struct
+      fields:
+      - name: ItemId
+        type: string
+        nullable: true
+        metadata: {}
+      - name: SKU
+        type: string
+        nullable: true
+        metadata: {}
+      - name: Description
+        type: string
+        nullable: true
+        metadata: {}
+      - name: Brand
+        type: string
+        nullable: true
+        metadata: {}
+      - name: Category
+        type: string
+        nullable: true
+        metadata: {}
+      - name: Subcategory
+        type: string
+        nullable: true
+        metadata: {}
+      - name: Material
+        type: string
+        nullable: true
+        metadata: {}
+      - name: NominalSize
+        type: double
+        nullable: true
+        metadata: {}
+      - name: EndConnection
+        type: string
+        nullable: true
+        metadata: {}
+      - name: PressureClass
+        type: long
+        nullable: true
+        metadata: {}
+      - name: Weight
+        type: double
+        nullable: true
+        metadata: {}
+      - name: Cost
+        type: double
+        nullable: true
+        metadata: {}
+      - name: ListPrice
+        type: double
+        nullable: true
+        metadata: {}
+      - name: IsSDOFCertified
+        type: string
+        nullable: true
+        metadata: {}
+      - name: StructuralIndex
+        type: double
+        nullable: true
+        metadata: {}
+      - name: SpanRating
+        type: double
+        nullable: true
+        metadata: {}
+      - name: OrganizationId
+        type: long
+        nullable: true
+        metadata: {}
+      - name: GeneratedAt
+        type: string
+        nullable: true
+        metadata: {}
+    zones:
+      bronze:
+        mode: append
+      silver:
+        mode: merge
+        merge_keys:
+        - item_id
+        custom_transform: silver_item
+  shipment:
+    format: eventhub
+    source_uri: Endpoint=sb://esehmtcypknmdp3i6ao83erb.servicebus.windows.net/;SharedAccessKeyName=key_e447b74c-5906-473e-95b3-5456d3a7b3a2;SharedAccessKey=pw6+QKKi2bQVt2A870eNZNskYFZMhqIXJ+AEhE86eoI=;EntityPath=es_a61f574d-aa40-4d49-9794-466d9dde69db
+    description: Shipment header
+    trigger_mode: processingTime
+    clean_source: true
+    schema:
+      type: struct
+      fields:
+      - name: _meta
+        type:
+          type: struct
+          fields:
+          - name: enqueuedTime
+            type: string
+            nullable: true
+            metadata: {}
+          - name: producer
+            type: string
+            nullable: true
+            metadata: {}
+          - name: recordType
+            type: string
+            nullable: true
+            metadata: {}
+          - name: schemaVersion
+            type: string
+            nullable: true
+            metadata: {}
+        nullable: true
+        metadata: {}
+      - name: data
+        type:
+          type: array
+          elementType:
+            type: struct
+            fields:
+            - name: CommittedDeliveryDate
+              type: string
+              nullable: true
+              metadata: {}
+            - name: CurrentFacilityId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: CustomerId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: CustomerName
+              type: string
+              nullable: true
+              metadata: {}
+            - name: DeclaredValue
+              type: double
+              nullable: true
+              metadata: {}
+            - name: DestinationAddress
+              type: string
+              nullable: true
+              metadata: {}
+            - name: DestinationCity
+              type: string
+              nullable: true
+              metadata: {}
+            - name: DestinationCountry
+              type: string
+              nullable: true
+              metadata: {}
+            - name: DestinationFacilityId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: DestinationLatitude
+              type: double
+              nullable: true
+              metadata: {}
+            - name: DestinationLongitude
+              type: double
+              nullable: true
+              metadata: {}
+            - name: DestinationState
+              type: string
+              nullable: true
+              metadata: {}
+            - name: DestinationZipCode
+              type: string
+              nullable: true
+              metadata: {}
+            - name: Distance
+              type: double
+              nullable: true
+              metadata: {}
+            - name: GeneratedAt
+              type: string
+              nullable: true
+              metadata: {}
+            - name: Height
+              type: double
+              nullable: true
+              metadata: {}
+            - name: IsFragile
+              type: boolean
+              nullable: true
+              metadata: {}
+            - name: IsHazardous
+              type: boolean
+              nullable: true
+              metadata: {}
+            - name: LateDeliveryPenaltyPerDay
+              type: double
+              nullable: true
+              metadata: {}
+            - name: Length
+              type: double
+              nullable: true
+              metadata: {}
+            - name: OrderId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: OrderLineList
+              type:
+                type: array
+                elementType: long
+                containsNull: true
+              nullable: true
+              metadata: {}
+            - name: OrganizationId
+              type: long
+              nullable: true
+              metadata: {}
+            - name: OriginAddress
+              type: string
+              nullable: true
+              metadata: {}
+            - name: OriginCity
+              type: string
+              nullable: true
+              metadata: {}
+            - name: OriginCountry
+              type: string
+              nullable: true
+              metadata: {}
+            - name: OriginFacilityId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: OriginLatitude
+              type: double
+              nullable: true
+              metadata: {}
+            - name: OriginLongitude
+              type: double
+              nullable: true
+              metadata: {}
+            - name: OriginState
+              type: string
+              nullable: true
+              metadata: {}
+            - name: OriginZipCode
+              type: string
+              nullable: true
+              metadata: {}
+            - name: RequiresRefrigeration
+              type: boolean
+              nullable: true
+              metadata: {}
+            - name: ServiceLevel
+              type: string
+              nullable: true
+              metadata: {}
+            - name: ShipDate
+              type: string
+              nullable: true
+              metadata: {}
+            - name: ShipmentId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: SpecialInstructions
+              type: string
+              nullable: true
+              metadata: {}
+            - name: TrackingNumber
+              type: string
+              nullable: true
+              metadata: {}
+            - name: Volume
+              type: double
+              nullable: true
+              metadata: {}
+            - name: Weight
+              type: double
+              nullable: true
+              metadata: {}
+            - name: Width
+              type: double
+              nullable: true
+              metadata: {}
+          containsNull: true
+        nullable: true
+        metadata: {}
+    zones:
+      bronze:
+        mode: append
+        custom_transform: explode_message_payload
+      silver:
+        mode: append
+        custom_transform: silver_shipment
+  shipment_scan_event:
+    format: json
+    source_uri: Files/landing/shipment_scan_event
+    description: Events tracking shipment to destination
+    trigger_mode: processingTime
+    clean_source: true
+    schema:
+      type: struct
+      fields:
+      - name: _meta
+        type:
+          type: struct
+          fields:
+          - name: enqueuedTime
+            type: string
+            nullable: true
+            metadata: {}
+          - name: producer
+            type: string
+            nullable: true
+            metadata: {}
+          - name: recordType
+            type: string
+            nullable: true
+            metadata: {}
+          - name: schemaVersion
+            type: string
+            nullable: true
+            metadata: {}
+        nullable: true
+        metadata: {}
+      - name: data
+        type:
+          type: array
+          elementType:
+            type: struct
+            fields:
+            - name: AdditionalData
+              type:
+                type: struct
+                fields:
+                - name: condition
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: loadId
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: method
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: note
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: reason
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: reroute
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: resolution
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: review
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: signedBy
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: sortDecision
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: stopSequence
+                  type: long
+                  nullable: true
+                  metadata: {}
+                - name: transportType
+                  type: string
+                  nullable: true
+                  metadata: {}
+                - name: vehicleId
+                  type: string
+                  nullable: true
+                  metadata: {}
+              nullable: true
+              metadata: {}
+            - name: CurrentDestinationFacilityId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: CurrentOriginFacilityId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: CurrentServiceLevel
+              type: string
+              nullable: true
+              metadata: {}
+            - name: EmployeeId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: EstimatedArrivalTime
+              type: string
+              nullable: true
+              metadata: {}
+            - name: EventId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: EventTimestamp
+              type: string
+              nullable: true
+              metadata: {}
+            - name: EventType
+              type: string
+              nullable: true
+              metadata: {}
+            - name: ExceptionCode
+              type: string
+              nullable: true
+              metadata: {}
+            - name: ExceptionSeverity
+              type: string
+              nullable: true
+              metadata: {}
+            - name: FacilityId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: GeneratedAt
+              type: string
+              nullable: true
+              metadata: {}
+            - name: LocationLatitude
+              type: double
+              nullable: true
+              metadata: {}
+            - name: LocationLongitude
+              type: double
+              nullable: true
+              metadata: {}
+            - name: NextWaypointFacilityId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: OrganizationId
+              type: long
+              nullable: true
+              metadata: {}
+            - name: PlannedPathSnapshot
+              type:
+                type: array
+                elementType: string
+                containsNull: true
+              nullable: true
+              metadata: {}
+            - name: RelatedExceptionEventId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: ResolutionAction
+              type: string
+              nullable: true
+              metadata: {}
+            - name: RouteId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: ScanDeviceId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: ScheduleId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: SequenceNumber
+              type: long
+              nullable: true
+              metadata: {}
+            - name: ShipmentId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: SortLaneId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: SortingEquipmentId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: TrackingNumber
+              type: string
+              nullable: true
+              metadata: {}
+          containsNull: true
+        nullable: true
+        metadata: {}
+    zones:
+      bronze:
+        mode: append
+        custom_transform: explode_data
+      silver:
+        mode: append
+        custom_transform: silver_shipment_scan_event
+  order:
+    format: parquet
+    source_uri: Files/landing/order
+    description: Orders and order lines
+    trigger_mode: processingTime
+    clean_source: true
+    schema:
+      type: struct
+      fields:
+      - name: OrderId
+        type: string
+        nullable: true
+        metadata: {}
+      - name: OrderNumber
+        type: string
+        nullable: true
+        metadata: {}
+      - name: OrderDate
+        type: string
+        nullable: true
+        metadata: {}
+      - name: OrderTotal
+        type: double
+        nullable: true
+        metadata: {}
+      - name: Source
+        type: string
+        nullable: true
+        metadata: {}
+      - name: CustomerId
+        type: string
+        nullable: true
+        metadata: {}
+      - name: OrderLines
+        type:
+          type: array
+          elementType:
+            type: struct
+            fields:
+            - name: Description
+              type: string
+              nullable: true
+              metadata: {}
+            - name: ExtendedPrice
+              type: double
+              nullable: true
+              metadata: {}
+            - name: ItemId
+              type: string
+              nullable: true
+              metadata: {}
+            - name: LineNumber
+              type: long
+              nullable: true
+              metadata: {}
+            - name: NetWeight
+              type: double
+              nullable: true
+              metadata: {}
+            - name: Quantity
+              type: long
+              nullable: true
+              metadata: {}
+            - name: SKU
+              type: string
+              nullable: true
+              metadata: {}
+            - name: UnitPrice
+              type: double
+              nullable: true
+              metadata: {}
+            - name: WarrantyIncluded
+              type: boolean
+              nullable: true
+              metadata: {}
+          containsNull: true
+        nullable: true
+        metadata: {}
+      - name: OrganizationId
+        type: long
+        nullable: true
+        metadata: {}
+      - name: GeneratedAt
+        type: string
+        nullable: true
+        metadata: {}
+    zones:
+      bronze:
+        mode: append
+      silver:
+        mode: append
+        custom_transform: silver_order_transformer
+  customer:
+    format: parquet
+    source_uri: Files/landing/customer
+    description: Customer master
+    trigger_mode: processingTime
+    clean_source: true
+    schema:
+      type: struct
+      fields:
+      - name: CustomerId
+        type: string
+        nullable: true
+        metadata: {}
+      - name: CustomerName
+        type: string
+        nullable: true
+        metadata: {}
+      - name: Description
+        type: string
+        nullable: true
+        metadata: {}
+      - name: PrimaryContactFirstName
+        type: string
+        nullable: true
+        metadata: {}
+      - name: PrimaryContactLastName
+        type: string
+        nullable: true
+        metadata: {}
+      - name: PrimaryContactEmail
+        type: string
+        nullable: true
+        metadata: {}
+      - name: PrimaryContactPhone
+        type: string
+        nullable: true
+        metadata: {}
+      - name: DeliveryAddress
+        type:
+          type: struct
+          fields:
+          - name: Address
+            type: string
+            nullable: true
+            metadata: {}
+          - name: City
+            type: string
+            nullable: true
+            metadata: {}
+          - name: Country
+            type: string
+            nullable: true
+            metadata: {}
+          - name: Latitude
+            type: double
+            nullable: true
+            metadata: {}
+          - name: Longitude
+            type: double
+            nullable: true
+            metadata: {}
+          - name: State
+            type: string
+            nullable: true
+            metadata: {}
+          - name: ZipCode
+            type: string
+            nullable: true
+            metadata: {}
+        nullable: true
+        metadata: {}
+      - name: BillingAddress
+        type:
+          type: struct
+          fields:
+          - name: Address
+            type: string
+            nullable: true
+            metadata: {}
+          - name: City
+            type: string
+            nullable: true
+            metadata: {}
+          - name: Country
+            type: string
+            nullable: true
+            metadata: {}
+          - name: State
+            type: string
+            nullable: true
+            metadata: {}
+          - name: ZipCode
+            type: string
+            nullable: true
+            metadata: {}
+        nullable: true
+        metadata: {}
+      - name: OrganizationId
+        type: long
+        nullable: true
+        metadata: {}
+      - name: GeneratedAt
+        type: string
+        nullable: true
+        metadata: {}
+    zones:
+      bronze:
+        mode: append
+      silver:
+        mode: upsert
+        merge_keys:
+        - customer_id
+        custom_transform: silver_customer_transformer
+  service_level:
+    format: parquet
+    source_uri: Files/landing/servicelevel
+    description: Shipment service level
+    trigger_mode: availableNow
+    schema:
+      type: struct
+      fields:
+      - name: level
+        type: string
+        nullable: true
+        metadata: {}
+      - name: weight
+        type: long
+        nullable: true
+        metadata: {}
+      - name: days
+        type: long
+        nullable: true
+        metadata: {}
+      - name: OrganizationId
+        type: long
+        nullable: true
+        metadata: {}
+      - name: GeneratedAt
+        type: string
+        nullable: true
+        metadata: {}
+    zones:
+      bronze:
+        mode: append
+      silver:
+        mode: upsert
+        merge_keys:
+        - level
+        custom_transform: cast_generated_at
+  exception_type:
+    format: parquet
+    source_uri: Files/landing/exceptiontype
+    description: Shipment exception type
+    trigger_mode: availableNow
+    schema:
+      type: struct
+      fields:
+      - name: code
+        type: string
+        nullable: true
+        metadata: {}
+      - name: severity
+        type: string
+        nullable: true
+        metadata: {}
+      - name: description
+        type: string
+        nullable: true
+        metadata: {}
+      - name: OrganizationId
+        type: long
+        nullable: true
+        metadata: {}
+      - name: GeneratedAt
+        type: string
+        nullable: true
+        metadata: {}
+    zones:
+      bronze:
+        mode: append
+      silver:
+        mode: upsert
+        merge_keys:
+        - code
+        custom_transform: cast_generated_at
+  facility:
+    format: parquet
+    source_uri: Files/landing/facility
+    description: Shipment facility
+    trigger_mode: availableNow
+    schema:
+      type: struct
+      fields:
+      - name: FacilityId
+        type: string
+        nullable: true
+        metadata: {}
+      - name: FacilityName
+        type: string
+        nullable: true
+        metadata: {}
+      - name: FacilityType
+        type: string
+        nullable: true
+        metadata: {}
+      - name: Address
+        type: string
+        nullable: true
+        metadata: {}
+      - name: City
+        type: string
+        nullable: true
+        metadata: {}
+      - name: State
+        type: string
+        nullable: true
+        metadata: {}
+      - name: ZipCode
+        type: string
+        nullable: true
+        metadata: {}
+      - name: Country
+        type: string
+        nullable: true
+        metadata: {}
+      - name: Latitude
+        type: double
+        nullable: true
+        metadata: {}
+      - name: Longitude
+        type: double
+        nullable: true
+        metadata: {}
+      - name: OrganizationId
+        type: long
+        nullable: true
+        metadata: {}
+      - name: GeneratedAt
+        type: string
+        nullable: true
+        metadata: {}
+    zones:
+      bronze:
+        mode: append
+      silver:
+        mode: upsert
+        merge_keys:
+        - facility_id
+        custom_transform: cast_generated_at
+  route:
+    format: parquet
+    source_uri: Files/landing/route
+    description: Shipment routes
+    trigger_mode: availableNow
+    schema:
+      type: struct
+      fields:
+      - name: RouteId
+        type: string
+        nullable: true
+        metadata: {}
+      - name: OriginFacilityId
+        type: string
+        nullable: true
+        metadata: {}
+      - name: DestinationFacilityId
+        type: string
+        nullable: true
+        metadata: {}
+      - name: TransportMode
+        type: string
+        nullable: true
+        metadata: {}
+      - name: TravelTimeHours
+        type: double
+        nullable: true
+        metadata: {}
+      - name: OrganizationId
+        type: long
+        nullable: true
+        metadata: {}
+      - name: GeneratedAt
+        type: string
+        nullable: true
+        metadata: {}
+    zones:
+      bronze:
+        mode: append
+      silver:
+        mode: upsert
+        merge_keys:
+        - route_id
+        custom_transform: cast_generated_at
