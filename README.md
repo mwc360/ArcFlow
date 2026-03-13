@@ -56,40 +56,79 @@ pip install -e .
 
 ### 1. Define Your Tables
 
-Create a table registry with `FlowConfig`:
+Tables can be defined in **Python** (dataclasses) or **YAML** — both produce the same `FlowConfig` objects.
+
+#### Option A: Python Dataclasses
 
 ```python
 from arcflow import FlowConfig, StageConfig
 
 tables = {}
 
-# Define a table with zone-specific processing
 tables['sensor_data'] = FlowConfig(
     name='sensor_data',
     format='parquet',
     landing_path='Files/landing/opc_ua/sensor_data/',
+    schema=StructType([...]),
     zones={
-        'bronze': StageConfig(
-            enabled=True,
-            mode='append',
-            description='Raw sensor readings'
-        ),
+        'bronze': StageConfig(mode='append'),
         'silver': StageConfig(
-            enabled=True,
             mode='upsert',
             merge_keys=['sensor_id', 'timestamp'],
             custom_transform='clean_sensor_data',
-            description='Deduplicated and validated'
         ),
         'gold': StageConfig(
-            enabled=True,
             mode='append',
             custom_transform='aggregate_hourly',
-            description='Hourly aggregations'
         )
     }
 )
 ```
+
+#### Option B: YAML Configuration
+
+```yaml
+# pipeline.yml
+config:
+  streaming_enabled: true
+  checkpoint_uri: "Files/checkpoints/"
+  landing_uri: "Files/landing/"
+
+tables:
+  sensor_data:
+    format: parquet
+    source_uri: "Files/landing/opc_ua/sensor_data/"
+    schema: "sensor_id STRING, timestamp TIMESTAMP, value DOUBLE"
+    zones:
+      bronze:
+        mode: append
+      silver:
+        mode: upsert
+        merge_keys: [sensor_id, timestamp]
+        custom_transform: clean_sensor_data
+      gold:
+        mode: append
+        custom_transform: aggregate_sensor_data
+```
+
+Load and use it:
+
+```python
+from arcflow import load_yaml_config, Controller
+
+tables, dimensions, config = load_yaml_config("pipeline.yml")
+controller = Controller(spark, config, tables, dimensions)
+```
+
+Schemas in YAML use PySpark DDL syntax — including nested types:
+
+```yaml
+schema: >-
+  _meta STRUCT<producer: STRING, recordType: STRING>,
+  data ARRAY<STRUCT<ItemId: STRING, Cost: DOUBLE>>
+```
+
+See [`examples/pipeline_config.yml`](examples/pipeline_config.yml) for a full example.
 
 ### 2. Define Custom DataFrame Transformers (Optional)
 
@@ -238,7 +277,8 @@ Edit `src/arcflow/main.py` to:
 src/arcflow/
 ├── __init__.py                      # Package exports
 ├── models.py                        # FlowConfig, DimensionConfig, StageConfig
-├── orchestrator.py                  # ArcFlowOrchestrator
+├── yaml_loader.py                   # YAML configuration loader
+├── controller.py                    # Controller — orchestrates all pipelines
 ├── main.py                          # Entry point for Spark Job Definition
 │
 ├── core/

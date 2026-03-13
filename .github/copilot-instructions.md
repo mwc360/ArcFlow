@@ -8,6 +8,7 @@ ArcFlow is a **PySpark streaming ELT framework** for lakehouse architectures (Mi
 src/arcflow/
 ├── config.py                  # Global defaults (paths, spark settings, retry config)
 ├── models.py                  # Core dataclasses: FlowConfig, StageConfig, DimensionConfig
+├── yaml_loader.py             # YAML config loader (alternative to Python dataclasses)
 ├── controller.py              # Orchestrator — entry point for running pipelines
 ├── core/
 │   ├── spark_session.py       # SparkSession factory helpers
@@ -217,6 +218,56 @@ config = get_config({
 ```
 
 Key config keys: `landing_uri`, `archive_uri`, `checkpoint_uri`, `streaming_enabled`, `trigger_interval`, `await_termination`, `event_driven_chaining`, `optimize_write`, `auto_compact`.
+
+## YAML Configuration (`yaml_loader.py`)
+
+Pipeline configuration can be defined in YAML as an alternative to Python dataclasses. All three top-level keys are optional.
+
+```yaml
+# pipeline.yml
+config:
+  streaming_enabled: true
+  checkpoint_uri: "Files/checkpoints"
+
+tables:
+  item:
+    format: parquet
+    source_uri: "Files/landing/item"
+    schema: "ItemId STRING, SKU STRING, Cost DOUBLE"
+    zones:
+      bronze:
+        mode: append
+      silver:
+        mode: upsert
+        merge_keys: [item_id]
+        custom_transform: silver_item
+
+dimensions:
+  dim_shipment:
+    dimension_type: dimension
+    source_tables: [shipment, facility]
+    source_zone: silver
+    target_zone: gold
+    transform: build_dim_shipment
+    zone_config:
+      mode: upsert
+      merge_keys: [shipment_id]
+```
+
+Load with:
+
+```python
+from arcflow import load_yaml_config
+tables, dimensions, config = load_yaml_config("pipeline.yml")
+controller = Controller(spark, config, tables, dimensions)
+```
+
+- **`load_yaml_config(path)`** — returns `(Dict[str, FlowConfig], Optional[Dict[str, DimensionConfig]], Dict[str, Any])`
+- **`load_tables(raw_dict)`** / **`load_dimensions(raw_dict)`** — parse subsections independently
+- **Schema formats**: DDL string (`"Name STRING, Cost DOUBLE"`), StructType JSON dict, or field list. DDL parsing is pure Python (no SparkContext required).
+- Nested DDL types supported: `STRUCT<...>`, `ARRAY<...>`, `MAP<...>`, `DECIMAL(p,s)`
+
+See `examples/pipeline_config.yml` for a full example.
 
 ## Coding Conventions
 
