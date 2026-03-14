@@ -66,8 +66,8 @@ class JobLock:
         self,
         job_id: str,
         lock_path: str = "Files/locks/",
-        timeout_seconds: int = 3600,
-        poll_interval: int = 30,
+        timeout_seconds: int = 60,
+        poll_interval: Optional[int] = None,
         heartbeat_interval: Optional[int] = None,
     ):
         if not job_id:
@@ -76,7 +76,7 @@ class JobLock:
         self.job_id = job_id
         self.lock_path = lock_path
         self.timeout_seconds = timeout_seconds
-        self.poll_interval = poll_interval
+        self.poll_interval = poll_interval or max(timeout_seconds // 10, 5)
         self.heartbeat_interval = heartbeat_interval or max(timeout_seconds // 3, 10)
         self._lock_file = os.path.join(lock_path, f"{job_id}.lock")
         self._held = False

@@ -68,7 +68,8 @@ class Controller:
                     job_id=job_id,
                     lock_path=config.get('job_lock_path', 'Files/locks/'),
                     timeout_seconds=config.get('job_lock_timeout_seconds', 3600),
-                    poll_interval=config.get('job_lock_poll_interval', 30),
+                    poll_interval=config.get('job_lock_poll_interval'),
+                    heartbeat_interval=config.get('job_lock_heartbeat_interval'),
                 )
             else:
                 self.logger.warning("job_lock_enabled=True but no job_id provided — lock disabled")

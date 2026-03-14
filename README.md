@@ -170,10 +170,10 @@ controller = Controller(
 )
 
 # Run full pipeline
-orchestrator.run_full_pipeline(zones=['bronze', 'silver', 'gold'])
+controller.run_full_pipeline(zones=['bronze', 'silver', 'gold'])
 ```
 
-## Multi-Source Dimensional Modeling
+## Multi-Source Dimensional Modeling (UNDER CONSTRUCTION!)
 
 Build fact tables, dimensions, or bridge tables from multiple sources:
 
@@ -227,11 +227,12 @@ When enabled, the lock is automatically acquired at the start of `run_full_pipel
 from arcflow import Controller, get_config
 
 config = get_config({
-    'job_id': 'shipment-etl-prod',       # unique identifier for this job
+    'job_id': 'shipment-etl-prod',       # unique identifier for this job (scopes the lock)
     'job_lock_enabled': True,             # enable singleton lock
     'job_lock_path': 'Files/locks/',      # directory for lock files
     'job_lock_timeout_seconds': 1800,     # wait up to 30 min for existing lock
-    'job_lock_poll_interval': 30,         # check every 30s while waiting
+    # poll_interval and heartbeat_interval are auto-derived from timeout_seconds
+    # (see Derived Intervals below) — override only if needed
 })
 
 controller = Controller(spark, config, tables)
@@ -280,7 +281,18 @@ controller.run_full_pipeline()
 
 ### Heartbeat
 
-While the lock is held, a background daemon thread rewrites the lock file every `timeout_seconds // 3` seconds (minimum 10s) to keep `acquired_at` fresh. This prevents a legitimate long-running job from being mistaken for stale by another instance.
+While the lock is held, a background daemon thread rewrites the lock file to keep `acquired_at` fresh. This prevents a legitimate long-running job from being mistaken for stale by another instance.
+
+### Derived Intervals
+
+Both `poll_interval` and `heartbeat_interval` are automatically derived from `timeout_seconds` when not explicitly set, so all timing scales consistently from a single value:
+
+| Interval | Formula | Floor | Example (`timeout=3600`) | Example (`timeout=30`) |
+|---|---|---|---|---|
+| `poll_interval` | `timeout_seconds // 10` | 5s | 360s | 5s |
+| `heartbeat_interval` | `timeout_seconds // 3` | 10s | 1200s | 10s |
+
+Override either interval explicitly if the defaults don't suit your workload.
 
 ### Lock File Format
 
@@ -291,7 +303,7 @@ The lock file (`<lock_path>/<job_id>.lock`) is human-readable JSON for debugging
   "job_id": "shipment-etl-prod",
   "acquired_at": "2026-03-13T22:00:00+00:00",
   "timeout_seconds": 1800,
-  "instance_id": "notebook-session-abc",
+  "instance_id": "a3f8b2c1d4e5",
   "hostname": "spark-worker-01",
   "pid": 12345
 }
@@ -305,7 +317,8 @@ The lock file (`<lock_path>/<job_id>.lock`) is human-readable JSON for debugging
 | `job_lock_enabled` | `bool` | `False` | Enable singleton lock |
 | `job_lock_path` | `str` | `"Files/locks/"` | Directory for lock files |
 | `job_lock_timeout_seconds` | `int` | `3600` | Max wait time before failing (seconds) |
-| `job_lock_poll_interval` | `int` | `30` | Retry interval while waiting (seconds) |
+| `job_lock_poll_interval` | `int` | `None` | Retry interval while waiting (default: `timeout_seconds // 10`, min 5s) |
+| `job_lock_heartbeat_interval` | `int` | `None` | Lock file refresh interval (default: `timeout_seconds // 3`, min 10s) |
 
 ## Development vs Production
 
@@ -492,8 +505,8 @@ DimensionConfig(
 
 ### 5. Error Handling
 
-- Monitor streaming query status with `orchestrator.get_status()`
-- Implement graceful shutdown with `orchestrator.stop_all()`
+- Monitor streaming query status with `controller.get_status()`
+- Implement graceful shutdown with `controller.stop_all()`
 - Use checkpointing for exactly-once processing
 
 ## Examples

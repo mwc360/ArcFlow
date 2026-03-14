@@ -65,7 +65,8 @@ class Defaults:
     JOB_LOCK_ENABLED: bool = False              # Opt-in singleton lock
     JOB_LOCK_PATH: str = "Files/locks/"         # Base directory for lock files
     JOB_LOCK_TIMEOUT_SECONDS: int = 3600        # Wait timeout before failing (1 hour)
-    JOB_LOCK_POLL_INTERVAL: int = 30            # Seconds between retry checks
+    JOB_LOCK_POLL_INTERVAL: int = None          # Seconds between retry checks (default: timeout_seconds // 10, min 5)
+    JOB_LOCK_HEARTBEAT_INTERVAL: int = None     # Heartbeat refresh interval (default: timeout_seconds // 3, min 10)
     
     @classmethod
     def get_default_config(cls) -> Dict[str, Any]:
@@ -107,6 +108,7 @@ class Defaults:
             'job_lock_path': cls.JOB_LOCK_PATH,
             'job_lock_timeout_seconds': cls.JOB_LOCK_TIMEOUT_SECONDS,
             'job_lock_poll_interval': cls.JOB_LOCK_POLL_INTERVAL,
+            'job_lock_heartbeat_interval': cls.JOB_LOCK_HEARTBEAT_INTERVAL,
         }
     
     @classmethod

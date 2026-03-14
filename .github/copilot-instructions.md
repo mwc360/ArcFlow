@@ -293,7 +293,7 @@ controller.run_full_pipeline()   # lock auto-acquired/released
 - **Heartbeat**: Background daemon thread refreshes `acquired_at` every `timeout_seconds // 3` (min 10s) to prevent false stale recovery on long-running jobs
 - **Stale recovery**: If lock file age exceeds the **holder's** recorded `timeout_seconds`, it is auto-recovered
 - **Controller integration**: Lock acquired at start of `run_full_pipeline()` / `run_zone_pipeline()`, released on completion or error. Nested calls skip re-acquisition. `stop_all()` also releases.
-- **Config keys**: `job_id`, `job_lock_enabled` (default `False`), `job_lock_path`, `job_lock_timeout_seconds` (default `3600`), `job_lock_poll_interval` (default `30`)
+- **Config keys**: `job_id`, `job_lock_enabled` (default `False`), `job_lock_path`, `job_lock_timeout_seconds` (default `3600`), `job_lock_poll_interval` (default `30`), `job_lock_heartbeat_interval` (default `timeout_seconds // 3`, min 10s)
 
 ## Coding Conventions
 

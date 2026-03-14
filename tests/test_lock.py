@@ -325,6 +325,14 @@ class TestHeartbeat:
         lock2 = JobLock(job_id="defaults2", lock_path="tmp/", timeout_seconds=15)
         assert lock2.heartbeat_interval == 10   # min 10
 
+    def test_default_poll_interval(self):
+        """Default poll_interval should be timeout_seconds // 10, min 5."""
+        lock = JobLock(job_id="defaults", lock_path="tmp/", timeout_seconds=3600)
+        assert lock.poll_interval == 360  # 3600 // 10
+
+        lock2 = JobLock(job_id="defaults2", lock_path="tmp/", timeout_seconds=30)
+        assert lock2.poll_interval == 5   # min 5
+
 
 # ---------------------------------------------------------------------------
 # Context manager
@@ -359,6 +367,8 @@ class TestConfigIntegration:
         config = get_config()
         assert config["job_lock_enabled"] is False
         assert config["job_id"] is None
+        assert config["job_lock_poll_interval"] is None
+        assert config["job_lock_heartbeat_interval"] is None
 
     def test_config_merges_lock_settings(self):
         from arcflow.config import get_config
