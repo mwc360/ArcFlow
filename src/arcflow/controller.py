@@ -58,6 +58,8 @@ class Controller:
         self._chain_listener: Optional[StageChainListener] = None
         self._processed_stages: Set[Tuple[str, str]] = set()  # (flow_name, stage_name)
         
+        self.logger = logging.getLogger(__name__)
+
         # Job lock (opt-in via config)
         self._job_lock: Optional[JobLock] = None
         self._lock_held_by_full_pipeline = False
@@ -73,8 +75,6 @@ class Controller:
                 )
             else:
                 self.logger.warning("job_lock_enabled=True but no job_id provided — lock disabled")
-        
-        self.logger = logging.getLogger(__name__)
 
         # Auto-apply best-practice Spark configs (opt-out via autoset_spark_configs=False)
         if config.get('autoset_spark_configs', True):
@@ -414,14 +414,20 @@ class Controller:
     ):
         """
         Event-driven pipeline: first zone runs with its configured trigger,
-        downstream zones are spawned as availableNow via StreamingQueryListener.
+        downstream zones are spawned as availableNow via StageChainListener
+        at per-table granularity.
+
+        First-batch cascade: on startup the first event for each table
+        unconditionally triggers its downstream counterpart (even with 0
+        rows), so the full chain runs at least once — no separate recovery
+        logic needed.
         """
         self.logger.info(f"Starting event-driven pipeline: {' → '.join(zones)}")
         
-        # Build the listener with spawn callback
+        # Build the listener with per-table spawn callback
         self._chain_listener = StageChainListener(
             zone_chain=zones,
-            spawn_zone_fn=self._spawn_zone,
+            spawn_table_fn=self._spawn_table,
             logger=self.logger,
         )
         self.spark.streams.addListener(self._chain_listener)
@@ -431,33 +437,11 @@ class Controller:
         first_zone = zones[0]
         queries = self.run_zone_pipeline(first_zone)
         
-        # Determine trigger mode for first zone queries
+        # Register first-zone queries with the listener (includes table_name)
         for q in queries:
-            # Find the matching FlowConfig to get trigger_mode
             trigger_mode = self._get_query_trigger_mode(q.name, first_zone)
-            self._chain_listener.register_query(q, first_zone, trigger_mode)
-        
-        # Recovery: cascade all downstream zones as availableNow after the first
-        # zone is running. Idempotent — if no pending data from a prior run,
-        # streams process 0 rows and stop. Registers with the listener's
-        # _active_downstream set so it won't double-spawn if the listener
-        # fires before recovery finishes.
-        for zone in zones[1:]:
-            with self._chain_listener._lock:
-                if zone in self._chain_listener._active_downstream:
-                    self.logger.info(f"Recovery: {zone} already spawned by listener, skipping")
-                    continue
-                self._chain_listener._active_downstream.add(zone)
-
-            self.logger.info(f"Recovery: spawning {zone} as availableNow")
-            try:
-                recovery_queries = self._spawn_zone_internal(zone, recovery=True)
-                for q in recovery_queries:
-                    self._chain_listener.register_query(q, zone, 'availableNow')
-            except Exception as e:
-                self.logger.error(f"Recovery: failed to spawn {zone}: {e}")
-                with self._chain_listener._lock:
-                    self._chain_listener._active_downstream.discard(zone)
+            table_name = self._get_query_table_name(q.name, first_zone)
+            self._chain_listener.register_query(q, first_zone, trigger_mode, table_name)
         
         # Dimensions: run after all zones (not event-driven)
         if include_dimensions and self.dimension_registry:
@@ -467,14 +451,38 @@ class Controller:
         self.logger.info("Full pipeline started (event-driven chaining)")
         self._handle_await_termination(await_termination)
     
-    def _spawn_zone(self, zone: str) -> List[StreamingQuery]:
+    def _spawn_table(self, zone: str, table_name: str) -> Optional[StreamingQuery]:
         """
-        Callback for StageChainListener to spawn a zone as availableNow.
-        Creates a ZonePipeline, processes all enabled tables, and registers
-        queries with the StreamManager.
+        Callback for StageChainListener to spawn a single table as availableNow.
+
+        Creates a ZonePipeline, processes the one table, and registers the
+        resulting query with the StreamManager.
+
+        Args:
+            zone: Target zone (e.g. 'silver')
+            table_name: FlowConfig.name to process (e.g. 'item')
+
+        Returns:
+            StreamingQuery if started, None if table not enabled / skipped.
         """
-        queries = self._spawn_zone_internal(zone)
-        return queries
+        config = self.table_registry.get(table_name)
+        if not config or not config.is_enabled_for_zone(zone):
+            self.logger.warning(
+                f"Table {table_name} not found or not enabled for {zone}"
+            )
+            return None
+
+        pipeline = ZonePipeline(
+            spark=self.spark,
+            zone=zone,
+            config=self.config,
+        )
+
+        self.logger.info(f"Spawning {zone}.{table_name} as availableNow")
+        query = pipeline.process_table(config)
+        if query:
+            self.stream_manager.register(query, zone=zone)
+        return query
     
     def _spawn_zone_internal(self, zone: str, recovery: bool = False) -> List[StreamingQuery]:
         """Create and start zone pipeline queries, register with StreamManager.
@@ -512,10 +520,23 @@ class Controller:
         """Resolve the trigger mode for a query based on its FlowConfig."""
         for config in self.table_registry.values():
             if config.is_enabled_for_zone(zone):
-                # Query names typically follow the pattern: zone_tablename
-                if config.name in query_name:
+                expected = f"{zone}_{config.name}_stream"
+                if query_name == expected:
                     return config.trigger_mode
         return 'availableNow'
+
+    def _get_query_table_name(self, query_name: str, zone: str) -> Optional[str]:
+        """Extract FlowConfig.name from a query name.
+
+        Query names follow the pattern ``{zone}_{table_name}_stream``.
+        Returns None if no matching table is found.
+        """
+        for config in self.table_registry.values():
+            if config.is_enabled_for_zone(zone):
+                expected = f"{zone}_{config.name}_stream"
+                if query_name == expected:
+                    return config.name
+        return None
     
     def _handle_await_termination(self, await_termination: bool = None):
         """Common await_termination logic for both pipeline modes."""

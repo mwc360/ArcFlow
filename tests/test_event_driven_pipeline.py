@@ -94,8 +94,7 @@ class TestRunFullPipelineDispatch:
 
 class TestEventDrivenPipelineSetup:
     @patch.object(Controller, 'run_zone_pipeline', return_value=[])
-    @patch.object(Controller, '_spawn_zone_internal', return_value=[])
-    def test_registers_listener_with_spark(self, spawn_mock, rzp_mock):
+    def test_registers_listener_with_spark(self, rzp_mock):
         spark = _make_mock_spark()
         config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
         controller = Controller(spark, config, _make_table_registry())
@@ -106,24 +105,20 @@ class TestEventDrivenPipelineSetup:
         assert controller._chain_listener is not None
 
     @patch.object(Controller, 'run_zone_pipeline', return_value=[])
-    @patch.object(Controller, '_spawn_zone_internal', return_value=[])
-    def test_recovery_spawns_downstream_zones(self, spawn_mock, rzp_mock):
+    def test_no_recovery_spawn_calls(self, rzp_mock):
+        """Event-driven pipeline relies on first-batch cascade, not recovery spawns."""
         spark = _make_mock_spark()
         config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
         controller = Controller(spark, config, _make_table_registry())
 
-        controller._run_event_driven_pipeline(
-            ['bronze', 'silver', 'gold'], False, False
-        )
-
-        # Recovery should spawn silver and gold
-        assert spawn_mock.call_count == 2
-        spawn_mock.assert_any_call('silver', recovery=True)
-        spawn_mock.assert_any_call('gold', recovery=True)
+        with patch.object(controller, '_spawn_zone_internal') as spawn_mock:
+            controller._run_event_driven_pipeline(
+                ['bronze', 'silver', 'gold'], False, False
+            )
+            spawn_mock.assert_not_called()
 
     @patch.object(Controller, 'run_zone_pipeline', return_value=[])
-    @patch.object(Controller, '_spawn_zone_internal', return_value=[])
-    def test_starts_first_zone_via_run_zone_pipeline(self, spawn_mock, rzp_mock):
+    def test_starts_first_zone_via_run_zone_pipeline(self, rzp_mock):
         spark = _make_mock_spark()
         config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
         controller = Controller(spark, config, _make_table_registry())
@@ -131,6 +126,25 @@ class TestEventDrivenPipelineSetup:
         controller._run_event_driven_pipeline(['bronze', 'silver'], False, False)
 
         rzp_mock.assert_called_once_with('bronze')
+
+    @patch.object(Controller, 'run_zone_pipeline')
+    def test_registers_queries_with_table_name(self, rzp_mock):
+        """First-zone queries are registered with the listener including table_name."""
+        spark = _make_mock_spark()
+        config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
+        controller = Controller(spark, config, _make_table_registry())
+
+        # Simulate run_zone_pipeline returning a query
+        mock_query = MagicMock()
+        mock_query.name = "bronze_orders_stream"
+        mock_query.id = "q-1"
+        rzp_mock.return_value = [mock_query]
+
+        controller._run_event_driven_pipeline(['bronze', 'silver'], False, False)
+
+        # Verify the listener has the query registered with table_name
+        listener = controller._chain_listener
+        assert listener._query_table.get("bronze_orders_stream") == "orders"
 
 
 class TestStopAllCleansUpListener:
@@ -219,3 +233,85 @@ class TestConfigDefault:
     def test_event_driven_chaining_overrideable(self):
         config = get_config({'event_driven_chaining': False})
         assert config['event_driven_chaining'] is False
+
+
+class TestSpawnTable:
+    def test_spawn_table_creates_pipeline_and_processes(self):
+        spark = _make_mock_spark()
+        config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
+        controller = Controller(spark, config, _make_table_registry())
+
+        with patch('arcflow.controller.ZonePipeline') as MockPipeline:
+            mock_query = MagicMock()
+            mock_query.name = "silver_orders_stream"
+            MockPipeline.return_value.process_table.return_value = mock_query
+
+            result = controller._spawn_table('silver', 'orders')
+
+            assert result == mock_query
+            MockPipeline.assert_called_once_with(
+                spark=spark, zone='silver', config=config,
+            )
+
+    def test_spawn_table_returns_none_for_unknown_table(self):
+        spark = _make_mock_spark()
+        config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
+        controller = Controller(spark, config, _make_table_registry())
+
+        result = controller._spawn_table('silver', 'nonexistent')
+        assert result is None
+
+    def test_spawn_table_returns_none_for_disabled_zone(self):
+        spark = _make_mock_spark()
+        config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
+        schema = StructType([StructField("id", StringType())])
+        registry = {
+            "orders": FlowConfig(
+                name="orders", schema=schema, format="parquet",
+                zones={"bronze": StageConfig(enabled=True)},
+            ),
+        }
+        controller = Controller(spark, config, registry)
+
+        result = controller._spawn_table('silver', 'orders')
+        assert result is None
+
+
+class TestGetQueryTableName:
+    def test_extracts_table_name(self):
+        spark = _make_mock_spark()
+        config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
+        controller = Controller(spark, config, _make_table_registry())
+
+        assert controller._get_query_table_name("bronze_orders_stream", "bronze") == "orders"
+
+    def test_returns_none_for_unknown(self):
+        spark = _make_mock_spark()
+        config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
+        controller = Controller(spark, config, _make_table_registry())
+
+        assert controller._get_query_table_name("bronze_unknown_stream", "bronze") is None
+
+    def test_no_substring_collision(self):
+        """'shipment' should not match 'bronze_shipment_scan_event_stream'."""
+        spark = _make_mock_spark()
+        config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
+        schema = StructType([StructField("id", StringType())])
+        registry = {
+            "shipment": FlowConfig(
+                name="shipment", schema=schema, format="parquet",
+                zones={"bronze": StageConfig(enabled=True)},
+            ),
+            "shipment_scan_event": FlowConfig(
+                name="shipment_scan_event", schema=schema, format="parquet",
+                zones={"bronze": StageConfig(enabled=True)},
+            ),
+        }
+        controller = Controller(spark, config, registry)
+
+        assert controller._get_query_table_name(
+            "bronze_shipment_scan_event_stream", "bronze"
+        ) == "shipment_scan_event"
+        assert controller._get_query_table_name(
+            "bronze_shipment_stream", "bronze"
+        ) == "shipment"
