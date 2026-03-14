@@ -5,6 +5,7 @@ from pyspark.sql import DataFrame
 from pyspark.sql.streaming import StreamingQuery
 from typing import Optional, List, Tuple
 import logging
+import threading
 from .base_writer import BaseWriter
 from ..utils.table_utils import build_table_reference
 from ..transformations.common import (
@@ -16,6 +17,12 @@ from ..transformations.zone_transforms import (
     has_zone_transformer
 )
 import tenacity
+
+# Class-level lock shared across all DeltaWriter instances.  Makes the
+# "check active queries → start stream" sequence atomic so that concurrent
+# spawn paths (recovery + listener) cannot create duplicate streams for the
+# same (table, zone) pair.
+_stream_start_lock = threading.Lock()
 
 
 class DeltaWriter(BaseWriter):
@@ -100,60 +107,61 @@ class DeltaWriter(BaseWriter):
         table_name = getattr(table_config, 'name')
         query_name = f"{zone}_{table_name}_stream"
 
-        # Skip if a query with this name is truly active in the SparkSession
-        for active_query in self.spark.streams.active:
-            if active_query.name == query_name and active_query.isActive:
-                self.logger.info(
-                    f"⏭️  Query '{query_name}' is already active, skipping start"
-                )
-                return active_query
+        with _stream_start_lock:
+            # Skip if a query with this name is truly active in the SparkSession
+            for active_query in self.spark.streams.active:
+                if active_query.name == query_name and active_query.isActive:
+                    self.logger.info(
+                        f"⏭️  Query '{query_name}' is already active, skipping start"
+                    )
+                    return active_query
 
-        checkpoint_path = self.get_checkpoint_path(zone, table_name)
-        
-        writer = (df.writeStream
-            .format('delta')
-            .option('checkpointLocation', checkpoint_path)
-            .queryName(f"{zone}_{table_name}_stream")
-        )
-        
-        # Apply trigger configuration (override takes precedence for downstream zones)
-        trigger_mode = self.config.get('_trigger_mode_override') or getattr(table_config, 'trigger_mode', 'availableNow')
-        
-        # Check table-level trigger_interval first, then fall back to global config
-        trigger_interval = table_config.trigger_interval
-        if trigger_interval is None:
-            trigger_interval = self.config.get('trigger_interval', None)
-        
-        self.logger.debug(f"Trigger config for {table_name}: mode={trigger_mode}, interval={trigger_interval}")
-        
-        if trigger_mode == 'availableNow':
-            writer = writer.trigger(availableNow=True)
-        elif trigger_mode == 'processingTime':
-            if trigger_interval is None:
-                raise ValueError(
-                    f"`trigger_interval` not specified for {table_name}. "
-                    f"Set it in table config or global config. "
-                )
-            writer = writer.trigger(processingTime=trigger_interval)
-        elif trigger_mode == 'continuous':
-            interval = trigger_interval or '1 second'
-            writer = writer.trigger(continuous=interval)
-        
-        # Apply partitioning
-        if zone_config.partition_by:
-            writer = writer.partitionBy(*zone_config.partition_by)
-        
-        # Handle append vs upsert
-        if zone_config.mode == 'upsert':
-            # Use foreachBatch for merge/upsert
-            def upsert_batch(batch_df, batch_id):
-                self._merge_batch(batch_df, zone_config.merge_keys, table_reference)
+            checkpoint_path = self.get_checkpoint_path(zone, table_name)
             
-            return writer.foreachBatch(upsert_batch).start()
-        else:
-            # Simple append
-            writer = writer.outputMode('append')
-            return writer.toTable(table_reference)
+            writer = (df.writeStream
+                .format('delta')
+                .option('checkpointLocation', checkpoint_path)
+                .queryName(f"{zone}_{table_name}_stream")
+            )
+            
+            # Apply trigger configuration (override takes precedence for downstream zones)
+            trigger_mode = self.config.get('_trigger_mode_override') or getattr(table_config, 'trigger_mode', 'availableNow')
+            
+            # Check table-level trigger_interval first, then fall back to global config
+            trigger_interval = table_config.trigger_interval
+            if trigger_interval is None:
+                trigger_interval = self.config.get('trigger_interval', None)
+            
+            self.logger.debug(f"Trigger config for {table_name}: mode={trigger_mode}, interval={trigger_interval}")
+            
+            if trigger_mode == 'availableNow':
+                writer = writer.trigger(availableNow=True)
+            elif trigger_mode == 'processingTime':
+                if trigger_interval is None:
+                    raise ValueError(
+                        f"`trigger_interval` not specified for {table_name}. "
+                        f"Set it in table config or global config. "
+                    )
+                writer = writer.trigger(processingTime=trigger_interval)
+            elif trigger_mode == 'continuous':
+                interval = trigger_interval or '1 second'
+                writer = writer.trigger(continuous=interval)
+            
+            # Apply partitioning
+            if zone_config.partition_by:
+                writer = writer.partitionBy(*zone_config.partition_by)
+            
+            # Handle append vs upsert
+            if zone_config.mode == 'upsert':
+                # Use foreachBatch for merge/upsert
+                def upsert_batch(batch_df, batch_id):
+                    self._merge_batch(batch_df, zone_config.merge_keys, table_reference)
+                
+                return writer.foreachBatch(upsert_batch).start()
+            else:
+                # Simple append
+                writer = writer.outputMode('append')
+                return writer.toTable(table_reference)
     
     def _write_batch(
         self,
@@ -294,66 +302,67 @@ class DeltaWriter(BaseWriter):
         t_name = getattr(stages[0][1], 'table_name', None) or table_config.name
         query_name = f"{primary_name}_{t_name}_stream"
 
-        # Skip if already active
-        for active_query in self.spark.streams.active:
-            if active_query.name == query_name and active_query.isActive:
-                self.logger.info(f"⏭️  Query '{query_name}' is already active, skipping")
-                return active_query
+        with _stream_start_lock:
+            # Skip if already active
+            for active_query in self.spark.streams.active:
+                if active_query.name == query_name and active_query.isActive:
+                    self.logger.info(f"⏭️  Query '{query_name}' is already active, skipping")
+                    return active_query
 
-        checkpoint_path = self.get_checkpoint_path(zone, f"{t_name}_multi")
+            checkpoint_path = self.get_checkpoint_path(zone, f"{t_name}_multi")
 
-        # Capture references for the closure
-        writer_ref = self
-        stages_snapshot = list(stages)
-        table_config_ref = table_config
+            # Capture references for the closure
+            writer_ref = self
+            stages_snapshot = list(stages)
+            table_config_ref = table_config
 
-        def multi_batch(batch_df, batch_id):
-            if batch_df.isEmpty():
-                return
-            # Cache if writing to multiple targets
-            if len(stages_snapshot) > 1:
-                batch_df.cache()
-            try:
-                for s_name, s_cfg in stages_snapshot:
-                    target_df = writer_ref._apply_stage_transforms(batch_df, s_cfg)
-                    ref, _ = writer_ref._resolve_target(
-                        s_name, s_cfg, table_config_ref, s_name
-                    )
-                    writer_ref._write_single_target(target_df, s_cfg, ref)
-                    writer_ref.logger.info(f"  → wrote batch {batch_id} to {ref}")
-            finally:
+            def multi_batch(batch_df, batch_id):
+                if batch_df.isEmpty():
+                    return
+                # Cache if writing to multiple targets
                 if len(stages_snapshot) > 1:
-                    batch_df.unpersist()
+                    batch_df.cache()
+                try:
+                    for s_name, s_cfg in stages_snapshot:
+                        target_df = writer_ref._apply_stage_transforms(batch_df, s_cfg)
+                        ref, _ = writer_ref._resolve_target(
+                            s_name, s_cfg, table_config_ref, s_name
+                        )
+                        writer_ref._write_single_target(target_df, s_cfg, ref)
+                        writer_ref.logger.info(f"  → wrote batch {batch_id} to {ref}")
+                finally:
+                    if len(stages_snapshot) > 1:
+                        batch_df.unpersist()
 
-        writer = (
-            df.writeStream
-            .format('delta')
-            .option('checkpointLocation', checkpoint_path)
-            .queryName(query_name)
-        )
+            writer = (
+                df.writeStream
+                .format('delta')
+                .option('checkpointLocation', checkpoint_path)
+                .queryName(query_name)
+            )
 
-        # Apply trigger (override takes precedence for downstream zones)
-        trigger_mode = self.config.get('_trigger_mode_override') or getattr(table_config, 'trigger_mode', 'availableNow')
-        trigger_interval = getattr(table_config, 'trigger_interval', None)
-        if trigger_interval is None:
-            trigger_interval = self.config.get('trigger_interval', None)
-
-        if trigger_mode == 'availableNow':
-            writer = writer.trigger(availableNow=True)
-        elif trigger_mode == 'processingTime':
+            # Apply trigger (override takes precedence for downstream zones)
+            trigger_mode = self.config.get('_trigger_mode_override') or getattr(table_config, 'trigger_mode', 'availableNow')
+            trigger_interval = getattr(table_config, 'trigger_interval', None)
             if trigger_interval is None:
-                raise ValueError(
-                    f"`trigger_interval` not specified for {table_config.name}."
-                )
-            writer = writer.trigger(processingTime=trigger_interval)
-        elif trigger_mode == 'continuous':
-            writer = writer.trigger(continuous=trigger_interval or '1 second')
+                trigger_interval = self.config.get('trigger_interval', None)
 
-        self.logger.info(
-            f"Starting multi-target query '{query_name}' → "
-            f"{[s[0] for s in stages]}"
-        )
-        return writer.foreachBatch(multi_batch).start()
+            if trigger_mode == 'availableNow':
+                writer = writer.trigger(availableNow=True)
+            elif trigger_mode == 'processingTime':
+                if trigger_interval is None:
+                    raise ValueError(
+                        f"`trigger_interval` not specified for {table_config.name}."
+                    )
+                writer = writer.trigger(processingTime=trigger_interval)
+            elif trigger_mode == 'continuous':
+                writer = writer.trigger(continuous=trigger_interval or '1 second')
+
+            self.logger.info(
+                f"Starting multi-target query '{query_name}' → "
+                f"{[s[0] for s in stages]}"
+            )
+            return writer.foreachBatch(multi_batch).start()
 
     def _write_batch_multi(
         self,

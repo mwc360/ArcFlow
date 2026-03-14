@@ -4,6 +4,7 @@ Zone-agnostic pipeline - works for any zone (bronze, silver, gold, etc.)
 Replaces separate BronzePipeline, SilverPipeline, GoldPipeline with one flexible class
 """
 import logging
+import threading
 from typing import List, Optional, Tuple
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.streaming import StreamingQuery
@@ -23,6 +24,12 @@ from ..utils.table_utils import build_table_reference
 from ..utils.endpoint_validator import StreamEndpointValidator
 
 _STREAMING_FORMATS = ('kafka', 'eventhub')
+
+# Tracks query names currently being set up (between "decided to start" and
+# "stream is live in Spark").  Used with _query_start_lock to prevent two
+# threads from starting the same (table, zone) stream concurrently.
+_pending_queries: set = set()
+_query_start_lock = threading.Lock()
 
 
 class ZonePipeline:
@@ -468,6 +475,31 @@ class ZonePipeline:
         writer = writer_factory.create_writer(table_config, zone_config)
         return writer.write(df, table_config, zone_config, self.zone)
     
+    def _is_query_active(self, query_name: str) -> bool:
+        """Check if a streaming query with this name is already active."""
+        for active_query in self.spark.streams.active:
+            if active_query.name == query_name and active_query.isActive:
+                return True
+        return False
+
+    def _claim_query(self, query_name: str) -> bool:
+        """Atomically check if a query is active or pending, and claim it if not.
+        
+        Returns True if this caller now owns the query name and should proceed.
+        Returns False if the query is already active or being set up.
+        """
+        with _query_start_lock:
+            if query_name in _pending_queries or self._is_query_active(query_name):
+                return False
+            _pending_queries.add(query_name)
+            return True
+
+    @staticmethod
+    def _release_claim(query_name: str):
+        """Release a claimed query name after the stream has started (or failed)."""
+        with _query_start_lock:
+            _pending_queries.discard(query_name)
+
     def process_table(self, table_config: FlowConfig) -> Optional[StreamingQuery]:
         """
         Full pipeline for one table in this zone
@@ -483,7 +515,14 @@ class ZonePipeline:
         if not zone_config or not zone_config.enabled:
             self.logger.info(f"Table {table_config.name} not enabled for {self.zone} zone")
             return None
-        
+
+        query_name = f"{self.zone}_{table_config.name}_stream"
+
+        # For streaming: atomic check-and-claim prevents duplicate readStream setup
+        if self.is_streaming and not self._claim_query(query_name):
+            self.logger.info(f"⏭️  Query '{query_name}' is already active or pending, skipping")
+            return None
+
         self.logger.info(f"Processing {table_config.name} for {self.zone} zone")
         
         try:
@@ -502,6 +541,9 @@ class ZonePipeline:
         except Exception as e:
             self.logger.error(f"Failed to process {table_config.name}: {e}")
             raise
+        finally:
+            if self.is_streaming:
+                self._release_claim(query_name)
     
     def process_table_group(
         self,
@@ -522,6 +564,14 @@ class ZonePipeline:
             StreamingQuery if streaming, None if batch
         """
         stage_names = [s[0] for s in stages]
+        primary_name = stages[0][0]
+        t_name = getattr(stages[0][1], 'table_name', None) or table_config.name
+        query_name = f"{primary_name}_{t_name}_stream"
+
+        if self.is_streaming and not self._claim_query(query_name):
+            self.logger.info(f"⏭️  Query '{query_name}' is already active or pending, skipping")
+            return None
+
         self.logger.info(
             f"Processing multi-target group for {table_config.name}: {stage_names}"
         )
@@ -556,6 +606,9 @@ class ZonePipeline:
                 f"Failed to process multi-target group for {table_config.name}: {e}"
             )
             raise
+        finally:
+            if self.is_streaming:
+                self._release_claim(query_name)
 
     def process_all(
         self,

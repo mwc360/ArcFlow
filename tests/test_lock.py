@@ -303,12 +303,16 @@ class TestHeartbeat:
         # Wait longer than timeout_seconds — heartbeat keeps it fresh
         time.sleep(4)
 
-        # Manually write a foreign instance_id into a DIFFERENT lock to prove
-        # the contender can't steal it.  We verify by reading the lock file
-        # and confirming acquired_at was refreshed by the heartbeat.
+        # Verify acquired_at was refreshed by the heartbeat. Retry read in
+        # case we catch the file mid-write.
         lock_file = os.path.join(lock_dir, "hb-stale.lock")
-        with open(lock_file) as f:
-            data = json.load(f)
+        for _ in range(3):
+            try:
+                with open(lock_file) as f:
+                    data = json.load(f)
+                break
+            except json.JSONDecodeError:
+                time.sleep(0.2)
 
         acquired_at = datetime.fromisoformat(data["acquired_at"])
         age = (datetime.now(timezone.utc) - acquired_at).total_seconds()

@@ -439,12 +439,25 @@ class Controller:
         
         # Recovery: cascade all downstream zones as availableNow after the first
         # zone is running. Idempotent — if no pending data from a prior run,
-        # streams process 0 rows and stop.
+        # streams process 0 rows and stop. Registers with the listener's
+        # _active_downstream set so it won't double-spawn if the listener
+        # fires before recovery finishes.
         for zone in zones[1:]:
+            with self._chain_listener._lock:
+                if zone in self._chain_listener._active_downstream:
+                    self.logger.info(f"Recovery: {zone} already spawned by listener, skipping")
+                    continue
+                self._chain_listener._active_downstream.add(zone)
+
             self.logger.info(f"Recovery: spawning {zone} as availableNow")
-            recovery_queries = self._spawn_zone_internal(zone, recovery=True)
-            for q in recovery_queries:
-                self._chain_listener.register_query(q, zone, 'availableNow')
+            try:
+                recovery_queries = self._spawn_zone_internal(zone, recovery=True)
+                for q in recovery_queries:
+                    self._chain_listener.register_query(q, zone, 'availableNow')
+            except Exception as e:
+                self.logger.error(f"Recovery: failed to spawn {zone}: {e}")
+                with self._chain_listener._lock:
+                    self._chain_listener._active_downstream.discard(zone)
         
         # Dimensions: run after all zones (not event-driven)
         if include_dimensions and self.dimension_registry:
