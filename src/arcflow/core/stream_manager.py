@@ -24,13 +24,17 @@ class StreamManager:
     
     def register(self, query: Optional[StreamingQuery], zone: Optional[str] = None):
         """
-        Register a streaming query for management
+        Register a streaming query for management.
+
+        Also prunes terminated queries to prevent unbounded memory growth
+        in long-running streaming jobs.
         
         Args:
             query: StreamingQuery instance (None for batch queries)
             zone: Optional zone name for zone-aware tracking
         """
         if query is not None:
+            self._prune_terminated()
             self.queries.append(query)
             if zone is not None:
                 self._zone_queries.setdefault(zone, []).append(query)
@@ -40,6 +44,20 @@ class StreamManager:
     def has_queries(self) -> bool:
         """Check if any queries are registered"""
         return len(self.queries) > 0
+
+    def _prune_terminated(self):
+        """Remove terminated queries to free Py4J / JVM references."""
+        before = len(self.queries)
+        self.queries = [q for q in self.queries if q.isActive]
+        for zone in list(self._zone_queries):
+            self._zone_queries[zone] = [
+                q for q in self._zone_queries[zone] if q.isActive
+            ]
+            if not self._zone_queries[zone]:
+                del self._zone_queries[zone]
+        pruned = before - len(self.queries)
+        if pruned > 0:
+            self.logger.debug(f"Pruned {pruned} terminated queries")
     
     def await_all(self, timeout: Optional[int] = None):
         """

@@ -93,7 +93,7 @@ class TestRunFullPipelineDispatch:
 
 
 class TestEventDrivenPipelineSetup:
-    @patch.object(Controller, 'run_zone_pipeline', return_value=[])
+    @patch.object(Controller, '_run_zone_pipeline_inner', return_value=[])
     def test_registers_listener_with_spark(self, rzp_mock):
         spark = _make_mock_spark()
         config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
@@ -104,7 +104,7 @@ class TestEventDrivenPipelineSetup:
         spark.streams.addListener.assert_called_once()
         assert controller._chain_listener is not None
 
-    @patch.object(Controller, 'run_zone_pipeline', return_value=[])
+    @patch.object(Controller, '_run_zone_pipeline_inner', return_value=[])
     def test_no_recovery_spawn_calls(self, rzp_mock):
         """Event-driven pipeline relies on first-batch cascade, not recovery spawns."""
         spark = _make_mock_spark()
@@ -117,7 +117,7 @@ class TestEventDrivenPipelineSetup:
             )
             spawn_mock.assert_not_called()
 
-    @patch.object(Controller, 'run_zone_pipeline', return_value=[])
+    @patch.object(Controller, '_run_zone_pipeline_inner', return_value=[])
     def test_starts_first_zone_via_run_zone_pipeline(self, rzp_mock):
         spark = _make_mock_spark()
         config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
@@ -125,24 +125,34 @@ class TestEventDrivenPipelineSetup:
 
         controller._run_event_driven_pipeline(['bronze', 'silver'], False, False)
 
-        rzp_mock.assert_called_once_with('bronze')
+        rzp_mock.assert_called_once()
+        call_kwargs = rzp_mock.call_args
+        assert call_kwargs[0][0] == 'bronze' or call_kwargs[1].get('zone') == 'bronze'
 
-    @patch.object(Controller, 'run_zone_pipeline')
+    @patch.object(Controller, '_run_zone_pipeline_inner')
     def test_registers_queries_with_table_name(self, rzp_mock):
         """First-zone queries are registered with the listener including table_name."""
         spark = _make_mock_spark()
         config = get_config({'streaming_enabled': True, 'autoset_spark_configs': False})
         controller = Controller(spark, config, _make_table_registry())
 
-        # Simulate run_zone_pipeline returning a query
+        # Simulate _run_zone_pipeline_inner returning a query AND invoking
+        # the on_query_started callback (as the real implementation does).
         mock_query = MagicMock()
         mock_query.name = "bronze_orders_stream"
         mock_query.id = "q-1"
-        rzp_mock.return_value = [mock_query]
+
+        def fake_inner(zone, on_query_started=None, **kwargs):
+            if on_query_started:
+                # Simulate what the real code does: call back with (query, table_config)
+                on_query_started(mock_query, controller.table_registry['orders'])
+            return [mock_query]
+
+        rzp_mock.side_effect = fake_inner
 
         controller._run_event_driven_pipeline(['bronze', 'silver'], False, False)
 
-        # Verify the listener has the query registered with table_name
+        # The callback should have registered the query with the listener
         listener = controller._chain_listener
         assert listener._query_table.get("bronze_orders_stream") == "orders"
 

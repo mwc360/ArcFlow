@@ -178,30 +178,27 @@ class StageChainListener(StreamingQueryListener):
         if query_name is None:
             return
 
+        num_input_rows = progress.numInputRows
+        has_rows = num_input_rows is not None and num_input_rows > 0
+
         with self._lock:
             zone = self._query_zone.get(query_name)
             trigger_mode = self._query_trigger.get(query_name)
             table_name = self._query_table.get(query_name)
 
-        if zone is None or trigger_mode is None or table_name is None:
-            return
+            if zone is None or trigger_mode is None or table_name is None:
+                return
 
-        num_input_rows = progress.numInputRows
-        has_rows = num_input_rows is not None and num_input_rows > 0
-
-        # First-batch cascade check
-        key = (zone, table_name)
-        with self._lock:
+            key = (zone, table_name)
             needs_initial_cascade = key not in self._initial_cascade_done
 
-        if trigger_mode == 'availableNow':
-            with self._lock:
+            if trigger_mode == 'availableNow':
                 if has_rows:
                     self._table_had_output.add(key)
                 # Don't mark _initial_cascade_done here — availableNow defers
                 # downstream triggering to onQueryTerminated where the cascade
                 # (and had_output check) are handled together.
-            return
+                return
 
         # processingTime or continuous: trigger downstream now
         downstream_zone = self._downstream.get(zone)
@@ -228,29 +225,38 @@ class StageChainListener(StreamingQueryListener):
 
         Routes to the appropriate handler based on whether this was a
         spawned downstream table or an upstream (root) query.
+        Cleans up per-query metadata to prevent unbounded memory growth.
         """
         query_id = str(event.id)
 
         with self._lock:
-            query_name = self._id_to_name.get(query_id)
+            query_name = self._id_to_name.pop(query_id, None)
             if query_name is None:
                 return
 
-            zone = self._query_zone.get(query_name)
+            zone = self._query_zone.pop(query_name, None)
             if zone is None:
                 return
 
-            table_name = self._query_table.get(query_name)
+            table_name = self._query_table.pop(query_name, None)
             if table_name is None:
                 return
+
+            # Clean remaining per-query metadata
+            trigger_mode = self._query_trigger.pop(query_name, None)
 
             key = (zone, table_name)
             is_spawned_downstream = key in self._active_downstream_tables
 
+            # Clean up completed futures while we hold the lock
+            self._pending_futures = [
+                f for f in self._pending_futures if not f.done()
+            ]
+
         if is_spawned_downstream:
             self._handle_downstream_termination(zone, table_name)
         else:
-            self._handle_upstream_termination(query_name, zone, table_name)
+            self._handle_upstream_termination(zone, table_name, trigger_mode)
 
     # ── Internal handlers ───────────────────────────────────────────
 
@@ -288,7 +294,7 @@ class StageChainListener(StreamingQueryListener):
             self._try_spawn_downstream_table(target_zone, table_name)
 
     def _handle_upstream_termination(
-        self, query_name: str, zone: str, table_name: str,
+        self, zone: str, table_name: str, trigger_mode: Optional[str],
     ):
         """Handle termination of an upstream (root) query.
 
@@ -300,7 +306,6 @@ class StageChainListener(StreamingQueryListener):
         key = (zone, table_name)
 
         with self._lock:
-            trigger_mode = self._query_trigger.get(query_name)
             had_output = key in self._table_had_output
             self._table_had_output.discard(key)
             needs_initial_cascade = key not in self._initial_cascade_done

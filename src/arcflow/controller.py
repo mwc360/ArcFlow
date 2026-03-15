@@ -7,7 +7,7 @@ Coordinates all pipelines:
 - Stream lifecycle management
 """
 import logging
-from typing import List, Dict, Optional, Tuple, Set
+from typing import Callable, List, Dict, Optional, Tuple, Set
 from pyspark.sql import SparkSession
 from pyspark.sql.streaming import StreamingQuery
 
@@ -190,9 +190,21 @@ class Controller:
         self,
         zone: str,
         source_zone: Optional[str] = None,
-        table_subset: Optional[List[str]] = None
+        table_subset: Optional[List[str]] = None,
+        on_query_started: Optional[Callable] = None,
     ) -> List[StreamingQuery]:
-        """Inner implementation of run_zone_pipeline (no lock logic)."""
+        """Inner implementation of run_zone_pipeline (no lock logic).
+
+        Args:
+            zone: Target zone name.
+            source_zone: Source zone to read from (None = landing).
+            table_subset: Optional list of table names to process.
+            on_query_started: Optional callback ``(query, table_config)``
+                invoked immediately after each stream starts.  Used by the
+                event-driven pipeline to register queries with the
+                StageChainListener before fast availableNow streams can
+                terminate.
+        """
         self.logger.info(f"Starting {zone} pipeline (source: {source_zone or 'landing'})")
         
         # Filter tables
@@ -243,6 +255,8 @@ class Controller:
                     query = pipeline.process_table(table_config)
                     if query:
                         queries.append(query)
+                        if on_query_started:
+                            on_query_started(query, table_config)
                 else:
                     # Multi-stage group: use primary stage's zone for the read
                     primary_zone = target_group[0][0]
@@ -252,6 +266,8 @@ class Controller:
                     query = pipeline.process_table_group(table_config, target_group)
                     if query:
                         queries.append(query)
+                        if on_query_started:
+                            on_query_started(query, table_config)
             except Exception as e:
                 if self.config.get('fail_fast', True):
                     raise
@@ -434,15 +450,21 @@ class Controller:
         self.spark.streams.addListener(self._chain_listener)
         self.logger.info("StageChainListener registered with SparkSession")
         
-        # Start the first zone with its configured trigger
+        # Start the first zone with its configured trigger.
+        # Register each query with the listener immediately (via callback)
+        # so fast availableNow streams are tracked before they terminate.
         first_zone = zones[0]
-        queries = self.run_zone_pipeline(first_zone)
-        
-        # Register first-zone queries with the listener (includes table_name)
-        for q in queries:
-            trigger_mode = self._get_query_trigger_mode(q.name, first_zone)
-            table_name = self._get_query_table_name(q.name, first_zone)
-            self._chain_listener.register_query(q, first_zone, trigger_mode, table_name)
+
+        def _register_with_listener(query, table_config):
+            trigger_mode = self._get_query_trigger_mode(query.name, first_zone)
+            table_name = self._get_query_table_name(query.name, first_zone)
+            self._chain_listener.register_query(
+                query, first_zone, trigger_mode, table_name,
+            )
+
+        queries = self._run_zone_pipeline_inner(
+            first_zone, on_query_started=_register_with_listener,
+        )
         
         # Dimensions: run after all zones (not event-driven)
         if include_dimensions and self.dimension_registry:
