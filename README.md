@@ -10,10 +10,10 @@ ArcFlow provides a means of rapidly moving and transforming data between zones o
 
 - **Zone-Agnostic Architecture**: No hardcoded bronze/silver/gold - use any zone names you want
 - **Single-Source Processing**: Process tables through zones with `FlowConfig`
-- **Multi-Source Modeling**: Build dimensional tables from multiple sources with `DimensionConfig`
 - **Stream & Batch Toggle**: Easy development-to-production switch
 - **Factory Patterns**: Extensible readers and writers for any format
 - **Custom Transformations**: Table-specific, zone-specific transformations via registry
+- **Dimensional Modeling**: _Coming soon_ — multi-source fact, dimension, and bridge table support
 
 ## Architecture
 
@@ -26,16 +26,16 @@ Bronze (raw ingestion)
     ↓
 Silver (curation, deduplication, semi-structured data parsing)
     ↓
-Gold (aggregations, business logic, dimensional modeling)
+Gold (aggregations, business logic)
 ```
 
 ### Core Components
 
-- **Models**: `FlowConfig`, `DimensionConfig`, `StageConfig` - Type-safe table definitions
+- **Models**: `FlowConfig`, `StageConfig` - Type-safe table definitions
 - **Readers**: Factory pattern for Parquet, JSON, CSV, etc.
 - **Writers**: Delta Lake append and upsert operations
 - **Transformations**: Universal + custom per-table-per-zone
-- **Pipelines**: `ZonePipeline` (single-source), `DimensionPipeline` (multi-source)
+- **Pipelines**: `ZonePipeline` (single-source processing)
 - **Controller**: `Controller` - Coordinates all pipelines
 - **Job Lock**: `JobLock` - Singleton lock to prevent duplicate concurrent runs
 
@@ -117,8 +117,8 @@ Load and use it:
 ```python
 from arcflow import load_yaml_config, Controller
 
-tables, dimensions, config = load_yaml_config("pipeline.yml")
-controller = Controller(spark, config, tables, dimensions)
+tables, config = load_yaml_config("pipeline.yml")
+controller = Controller(spark, config, tables)
 ```
 
 Schemas in YAML use PySpark DDL syntax — including nested types:
@@ -173,45 +173,9 @@ controller = Controller(
 controller.run_full_pipeline(zones=['bronze', 'silver', 'gold'])
 ```
 
-## Multi-Source Dimensional Modeling (UNDER CONSTRUCTION!)
+## Multi-Source Dimensional Modeling
 
-Build fact tables, dimensions, or bridge tables from multiple sources:
-
-```python
-from arcflow import DimensionConfig
-
-# Define a fact table combining multiple sources
-equipment_fact = DimensionConfig(
-    name='fact_equipment_performance',
-    dimension_type='fact',
-    source_tables=[
-        {'table': 'sensor_data', 'zone': 'silver', 'alias': 'sensors'},
-        {'table': 'maintenance_logs', 'zone': 'silver', 'alias': 'maintenance'},
-        {'table': 'production_schedule', 'zone': 'silver', 'alias': 'schedule'}
-    ],
-    builder_transform='build_equipment_fact',
-    mode='upsert',
-    merge_keys=['equipment_id', 'timestamp'],
-    enabled=True
-)
-```
-
-Register the builder function:
-
-```python
-from arcflow.transformations.dimension_transforms import register_dimension_transformer
-
-@register_dimension_transformer
-def build_equipment_fact(source_tables: dict, dimension_config) -> DataFrame:
-    """Join sensors, maintenance, and schedule data"""
-    sensors = source_tables['sensors']
-    maintenance = source_tables['maintenance']
-    schedule = source_tables['schedule']
-    
-    # Your custom join logic
-    return sensors.join(maintenance, ['equipment_id'], 'left') \
-                  .join(schedule, ['equipment_id'], 'left')
-```
+> **Coming soon** — Multi-source dimensional modeling (fact tables, dimensions, bridge tables) is planned for a future release.
 
 ## Singleton Job Lock
 
@@ -384,7 +348,7 @@ Edit `src/arcflow/main.py` to:
 ```
 src/arcflow/
 ├── __init__.py                      # Package exports
-├── models.py                        # FlowConfig, DimensionConfig, StageConfig
+├── models.py                        # FlowConfig, StageConfig
 ├── yaml_loader.py                   # YAML configuration loader
 ├── controller.py                    # Controller — orchestrates all pipelines
 ├── lock.py                          # Singleton job lock (duplicate run prevention)
@@ -407,12 +371,10 @@ src/arcflow/
 │
 ├── transformations/
 │   ├── common.py                   # Universal transformations
-│   ├── zone_transforms.py          # Custom zone transformations registry
-│   └── dimension_transforms.py     # Custom dimension builders registry
+│   └── zone_transforms.py          # Custom zone transformations registry
 │
 └── pipelines/
-    ├── zone_pipeline.py            # Single-source zone processing
-    └── dimension_pipeline.py       # Multi-source dimensional modeling
+    └── zone_pipeline.py            # Single-source zone processing
 ```
 
 ## Testing
@@ -460,21 +422,6 @@ StageConfig(
 )
 ```
 
-### DimensionConfig
-
-```python
-DimensionConfig(
-    name: str,                          # Dimension table name
-    dimension_type: str,                # 'fact', 'dimension', 'bridge'
-    source_tables: List[dict],          # [{'table': 'x', 'zone': 'silver'}]
-    builder_transform: str,             # Name of registered builder
-    mode: str,                          # 'append' or 'upsert'
-    merge_keys: List[str] = None,       # Required for upsert
-    enabled: bool = True,
-    description: str = '',
-)
-```
-
 ## Best Practices
 
 ### 1. Zone Strategy
@@ -482,7 +429,6 @@ DimensionConfig(
 - **Bronze**: Raw ingestion, append-only, minimal transformations
 - **Silver**: Curated, deduplicated, upsert mode with merge keys
 - **Gold**: Business aggregations, materialized views
-- **Dimensions**: Multi-source modeling in gold or separate zone
 
 ### 2. Custom Transformations
 
@@ -494,8 +440,7 @@ DimensionConfig(
 ### 3. Merge Keys
 
 - Always specify merge keys for upsert mode
-- Include timestamp or version columns for SCD Type 2
-- Use surrogate keys for dimensions
+- Include timestamp or version columns for change tracking
 
 ### 4. Streaming vs Batch
 
@@ -512,11 +457,9 @@ DimensionConfig(
 ## Examples
 
 See `src/arcflow/main.py` for complete examples including:
-- OPC UA sensor data processing
+- Sensor data processing
 - Equipment maintenance logs
 - Production schedule ingestion
-- Equipment performance fact table
-- Sensor dimension with SCD Type 2
 
 ## Contributing
 

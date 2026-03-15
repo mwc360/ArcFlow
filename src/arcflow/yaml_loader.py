@@ -11,8 +11,8 @@ Schema fields accept either:
 Usage:
     from arcflow.yaml_loader import load_yaml_config
 
-    tables, dimensions, config = load_yaml_config("pipeline.yml")
-    controller = Controller(spark, config, tables, dimensions)
+    tables, config = load_yaml_config("pipeline.yml")
+    controller = Controller(spark, config, tables)
 """
 
 from __future__ import annotations
@@ -306,20 +306,19 @@ def load_dimensions(raw: dict) -> Dict[str, DimensionConfig]:
 
 def load_yaml_config(
     path: Union[str, Path],
-) -> Tuple[Dict[str, FlowConfig], Optional[Dict[str, DimensionConfig]], Dict[str, Any]]:
+) -> Tuple[Dict[str, FlowConfig], Dict[str, Any]]:
     """Load a full ArcFlow pipeline configuration from a YAML file.
 
     Expected top-level keys (all optional):
         ``config``      — global pipeline settings (passed to ``get_config``)
         ``tables``      — table registry (key = table name)
-        ``dimensions``  — dimension registry (key = dimension name)
 
     Args:
         path: Path to the YAML file.
 
     Returns:
-        Tuple of (table_registry, dimension_registry, config_dict).
-        Missing sections default to empty dicts / None.
+        Tuple of (table_registry, config_dict).
+        Missing sections default to empty dicts.
     """
     path = Path(path)
     with open(path, "r", encoding="utf-8") as fh:
@@ -334,8 +333,4 @@ def load_yaml_config(
     if "tables" in doc:
         tables = load_tables(doc["tables"], defaults=config_dict)
 
-    dimensions: Optional[Dict[str, DimensionConfig]] = None
-    if "dimensions" in doc:
-        dimensions = load_dimensions(doc["dimensions"])
-
-    return tables, dimensions, config_dict
+    return tables, config_dict

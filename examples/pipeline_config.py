@@ -1,10 +1,9 @@
 """
-Table and dimension configuration for ArcFlow
+Table configuration for ArcFlow
 
 This file defines:
 1. Table registry - All source tables to process
-2. Dimension registry - Multi-source dimensional models
-3. Custom transformations - Business logic per table/zone
+2. Custom transformations - Business logic per table/zone
 
 Edit this file to configure your lakehouse pipelines.
 """

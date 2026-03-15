@@ -2,12 +2,12 @@
 # ArcFlow YAML Pipeline Configuration — Example
 # ──────────────────────────────────────────────────────────────
 #
-# This file is equivalent to defining FlowConfig / DimensionConfig
+# This file is equivalent to defining FlowConfig
 # dataclasses in Python.  Load it with:
 #
 #   from arcflow import load_yaml_config
-#   tables, dimensions, config = load_yaml_config("pipeline.yml")
-#   controller = Controller(spark, config, tables, dimensions)
+#   tables, config = load_yaml_config("pipeline.yml")
+#   controller = Controller(spark, config, tables)
 #
 # Schemas use PySpark DDL syntax:
 #   https://spark.apache.org/docs/latest/sql-ref-datatypes.html
@@ -66,17 +66,17 @@ tables:
         mode: append
         custom_transform: silver_shipment
 
-# ── Dimension registry (optional) ────────────────────────────
-dimensions:
-  dim_shipment_enriched:
-    dimension_type: dimension
-    source_tables: [shipment, facility]
-    source_zone: silver
-    target_zone: gold
-    transform: build_dim_shipment
-    zone_config:
-      mode: upsert
-      merge_keys: [shipment_id]
-    description: "Enriched shipment dimension"
-    tags: [gold, logistics]
-    owner: analytics-team
+# ── Dimension registry (coming soon) ─────────────────────────
+# dimensions:
+#   dim_shipment_enriched:
+#     dimension_type: dimension
+#     source_tables: [shipment, facility]
+#     source_zone: silver
+#     target_zone: gold
+#     transform: build_dim_shipment
+#     zone_config:
+#       mode: upsert
+#       merge_keys: [shipment_id]
+#     description: "Enriched shipment dimension"
+#     tags: [gold, logistics]
+#     owner: analytics-team

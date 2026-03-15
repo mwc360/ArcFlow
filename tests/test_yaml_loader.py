@@ -271,22 +271,11 @@ class TestLoadYamlConfig:
                   silver:
                     mode: upsert
                     merge_keys: [item_id]
-
-            dimensions:
-              dim_item:
-                dimension_type: dimension
-                source_tables: [item]
-                source_zone: silver
-                target_zone: gold
-                transform: build_dim_item
-                zone_config:
-                  mode: upsert
-                  merge_keys: [item_id]
         """)
         yml_file = tmp_path / "pipeline.yml"
         yml_file.write_text(content, encoding="utf-8")
 
-        tables, dimensions, config = load_yaml_config(yml_file)
+        tables, config = load_yaml_config(yml_file)
 
         assert config["streaming_enabled"] is True
         assert config["checkpoint_uri"] == "Files/checkpoints"
@@ -294,10 +283,6 @@ class TestLoadYamlConfig:
         assert "item" in tables
         assert tables["item"].format == "parquet"
         assert tables["item"].zones["silver"].merge_keys == ["item_id"]
-
-        assert dimensions is not None
-        assert "dim_item" in dimensions
-        assert dimensions["dim_item"].transform == "build_dim_item"
 
     def test_tables_only(self, tmp_path: Path):
         content = textwrap.dedent("""\
@@ -308,18 +293,16 @@ class TestLoadYamlConfig:
         yml_file = tmp_path / "tables.yml"
         yml_file.write_text(content, encoding="utf-8")
 
-        tables, dimensions, config = load_yaml_config(yml_file)
+        tables, config = load_yaml_config(yml_file)
         assert len(tables) == 1
-        assert dimensions is None
         assert config == {}
 
     def test_empty_file_gives_defaults(self, tmp_path: Path):
         yml_file = tmp_path / "empty.yml"
         yml_file.write_text("{}", encoding="utf-8")
 
-        tables, dimensions, config = load_yaml_config(yml_file)
+        tables, config = load_yaml_config(yml_file)
         assert tables == {}
-        assert dimensions is None
         assert config == {}
 
     def test_invalid_top_level_raises(self, tmp_path: Path):
@@ -345,7 +328,7 @@ class TestLoadYamlConfig:
         yml_file = tmp_path / "trigger.yml"
         yml_file.write_text(content, encoding="utf-8")
 
-        tables, _, _ = load_yaml_config(yml_file)
+        tables, _ = load_yaml_config(yml_file)
         assert tables["t1"].trigger_mode == "processingTime"
         assert tables["t1"].trigger_interval == "0 seconds"
         assert tables["t2"].trigger_mode == "continuous"
