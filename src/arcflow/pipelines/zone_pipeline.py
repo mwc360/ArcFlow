@@ -464,9 +464,12 @@ class ZonePipeline:
         Returns:
             StreamingQuery if streaming, None if batch
         """
-        # Force availableNow for downstream zones
+        # Force availableNow for downstream zones when using event-driven chaining.
+        # When chaining is disabled, downstream zones use the table's own trigger
+        # so they run as persistent streams alongside the root zone.
         source_zone = self._get_source_zone(table_config)
-        if source_zone is not None:
+        use_chaining = self.config.get('event_driven_chaining', True)
+        if source_zone is not None and use_chaining:
             config = {**self.config, '_trigger_mode_override': 'availableNow'}
         else:
             config = self.config
@@ -580,9 +583,12 @@ class ZonePipeline:
             # Read once from the shared source (uses self.zone for resolution)
             df = self.read_source(table_config)
 
-            # Force availableNow for downstream zones
+            # Force availableNow for downstream zones when using event-driven chaining.
+            # When chaining is disabled, downstream zones use the table's own trigger
+            # so they run as persistent streams alongside the root zone.
             source_zone = self._get_source_zone(table_config)
-            if source_zone is not None:
+            use_chaining = self.config.get('event_driven_chaining', True)
+            if source_zone is not None and use_chaining:
                 config = {**self.config, '_trigger_mode_override': 'availableNow'}
             else:
                 config = self.config

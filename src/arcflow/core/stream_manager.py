@@ -57,7 +57,7 @@ class StreamManager:
                 del self._zone_queries[zone]
         pruned = before - len(self.queries)
         if pruned > 0:
-            self.logger.debug(f"Pruned {pruned} terminated queries")
+            self.logger.info(f"Pruned {pruned} terminated queries ({len(self.queries)} active)")
     
     def await_all(self, timeout: Optional[int] = None):
         """
