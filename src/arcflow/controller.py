@@ -429,6 +429,7 @@ class Controller:
             zone_chain=zones,
             spawn_table_fn=self._spawn_table,
             logger=self.logger,
+            spark=self.spark,
         )
         self.spark.streams.addListener(self._chain_listener)
         self.logger.info("StageChainListener registered with SparkSession")
@@ -578,6 +579,7 @@ class Controller:
             self.logger.warning(f"Failed to reset terminated queries: {e}")
         if self._chain_listener is not None:
             try:
+                self._chain_listener.shutdown(wait=False)
                 self.spark.streams.removeListener(self._chain_listener)
                 self.logger.info("StageChainListener removed")
             except Exception as e:

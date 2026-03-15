@@ -91,6 +91,7 @@ class TestOnQueryProgressProcessingTime:
 
         event = _make_progress_event("bronze_orders", 100)
         listener.onQueryProgress(event)
+        listener.wait_for_pending_spawns()
 
         spawn_fn.assert_called_once_with('silver', 'orders')
 
@@ -155,6 +156,7 @@ class TestOnQueryProgressProcessingTime:
 
         listener.onQueryProgress(_make_progress_event("bronze_orders", 10))
         listener.onQueryProgress(_make_progress_event("bronze_items", 20))
+        listener.wait_for_pending_spawns()
 
         assert ('silver', 'orders') in spawned
         assert ('silver', 'items') in spawned
@@ -187,6 +189,7 @@ class TestOnQueryTerminated:
         listener._table_had_output.add(('bronze', 'orders'))
 
         listener.onQueryTerminated(_make_terminated_event("id-1"))
+        listener.wait_for_pending_spawns()
 
         spawn_fn.assert_called_once_with('silver', 'orders')
 
@@ -217,6 +220,7 @@ class TestOnQueryTerminated:
 
         # First bronze batch spawns silver_orders
         listener.onQueryProgress(_make_progress_event("bronze_orders", 100))
+        listener.wait_for_pending_spawns()
         assert len(spawned) == 1
 
         # Another bronze batch while silver is active → pending retrigger
@@ -225,6 +229,7 @@ class TestOnQueryTerminated:
 
         # silver_orders terminates → re-trigger
         listener.onQueryTerminated(_make_terminated_event("id-silver-orders"))
+        listener.wait_for_pending_spawns()
         assert len(spawned) == 2
         assert spawned[1][0] == 'silver'
         assert spawned[1][1] == 'orders'
@@ -245,6 +250,7 @@ class TestOnQueryTerminated:
         listener._table_had_output.add(('silver', 'orders'))
 
         listener.onQueryTerminated(_make_terminated_event("id-silver-orders"))
+        listener.wait_for_pending_spawns()
 
         assert len(spawned) == 1
         assert spawned[0] == ('gold', 'orders')
@@ -273,10 +279,12 @@ class TestDeduplication:
 
         # First progress spawns silver.orders
         listener.onQueryProgress(_make_progress_event("bronze_orders", 100))
+        listener.wait_for_pending_spawns()
         assert len(spawned) == 1
 
         # Second progress — silver.orders already active → pending retrigger
         listener.onQueryProgress(_make_progress_event("bronze_orders", 50))
+        listener.wait_for_pending_spawns()
         assert len(spawned) == 1  # NOT called again
         assert ('silver', 'orders') in listener._pending_retrigger_tables
 
@@ -299,10 +307,12 @@ class TestDeduplication:
 
         # Spawn silver.orders
         listener.onQueryProgress(_make_progress_event("bronze_orders", 100))
+        listener.wait_for_pending_spawns()
         assert len(spawned) == 1
 
         # silver.orders is active, but silver.items should still spawn
         listener.onQueryProgress(_make_progress_event("bronze_items", 50))
+        listener.wait_for_pending_spawns()
         assert len(spawned) == 2
         assert spawned[1] == ('silver', 'items')
 
@@ -318,6 +328,7 @@ class TestFirstBatchCascade:
         # First batch with 0 rows — should still trigger downstream
         event = _make_progress_event("bronze_orders", 0)
         listener.onQueryProgress(event)
+        listener.wait_for_pending_spawns()
 
         spawn_fn.assert_called_once_with('silver', 'orders')
         assert ('bronze', 'orders') in listener._initial_cascade_done
@@ -331,10 +342,12 @@ class TestFirstBatchCascade:
 
         # First batch (cascade)
         listener.onQueryProgress(_make_progress_event("bronze_orders", 0))
+        listener.wait_for_pending_spawns()
         assert spawn_fn.call_count == 1
 
         # Second batch with 0 rows — should NOT trigger
         listener.onQueryProgress(_make_progress_event("bronze_orders", 0))
+        listener.wait_for_pending_spawns()
         assert spawn_fn.call_count == 1
 
     def test_first_batch_cascade_for_availablenow_on_termination(self):
@@ -353,6 +366,7 @@ class TestFirstBatchCascade:
 
         # Termination — first-batch cascade fires even without output
         listener.onQueryTerminated(_make_terminated_event("id-1"))
+        listener.wait_for_pending_spawns()
         spawn_fn.assert_called_once_with('silver', 'orders')
         assert ('bronze', 'orders') in listener._initial_cascade_done
 
@@ -366,6 +380,7 @@ class TestFirstBatchCascade:
 
         # Terminate without any progress event — first-batch cascade fires
         listener.onQueryTerminated(_make_terminated_event("id-1"))
+        listener.wait_for_pending_spawns()
 
         spawn_fn.assert_called_once_with('silver', 'orders')
         assert ('bronze', 'orders') in listener._initial_cascade_done
@@ -384,6 +399,7 @@ class TestFirstBatchCascade:
 
         # Bronze first batch (0 rows) → cascades to silver
         listener.onQueryProgress(_make_progress_event("bronze_orders", 0))
+        listener.wait_for_pending_spawns()
         assert len(spawned) == 1
         assert spawned[0] == ('silver', 'orders')
 
@@ -398,6 +414,7 @@ class TestFirstBatchCascade:
         # Gold cascade depends on silver_orders producing output.
         # For a true 0-row cascade through 3 zones, silver must terminate:
         listener.onQueryTerminated(_make_terminated_event("id-silver-orders"))
+        listener.wait_for_pending_spawns()
         # No output from silver, no pending retrigger → no gold spawn
         # This is correct: silver processed 0 rows, so gold has nothing to process.
         assert len(spawned) == 1
@@ -422,6 +439,7 @@ class TestCascade:
         # Bronze produces output and terminates (first-batch cascade)
         listener._table_had_output.add(('bronze', 'orders'))
         listener.onQueryTerminated(_make_terminated_event("id-bronze"))
+        listener.wait_for_pending_spawns()
 
         # Silver should be spawned
         assert len(spawned) == 1
@@ -430,6 +448,7 @@ class TestCascade:
         # Silver produces output and terminates
         listener._table_had_output.add(('silver', 'orders'))
         listener.onQueryTerminated(_make_terminated_event("id-silver"))
+        listener.wait_for_pending_spawns()
 
         # Gold should be spawned
         assert len(spawned) == 2
@@ -446,6 +465,7 @@ class TestSpawnFailure:
         listener._initial_cascade_done.add(('bronze', 'orders'))
 
         listener.onQueryProgress(_make_progress_event("bronze_orders", 100))
+        listener.wait_for_pending_spawns()
 
         # Active flag should be cleared despite error
         assert ('silver', 'orders') not in listener._active_downstream_tables
@@ -459,6 +479,7 @@ class TestSpawnFailure:
         listener._initial_cascade_done.add(('bronze', 'orders'))
 
         listener.onQueryProgress(_make_progress_event("bronze_orders", 100))
+        listener.wait_for_pending_spawns()
 
         # spawn returned None → active flag cleared
         assert ('silver', 'orders') not in listener._active_downstream_tables

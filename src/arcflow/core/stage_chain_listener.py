@@ -9,11 +9,17 @@ not the entire silver zone.
 On startup, a first-batch cascade ensures each table triggers its
 downstream counterpart once (even with 0 rows) so the full chain runs
 at least once — this replaces explicit recovery logic.
+
+Spawning is async: the heavy work (ZonePipeline setup, Delta log replay,
+stream start) runs in a ThreadPoolExecutor, keeping the Spark listener
+thread free to process events without blocking.
 """
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
+from pyspark.sql import SparkSession
 from pyspark.sql.streaming import StreamingQueryListener
 
 
@@ -27,6 +33,9 @@ class StageChainListener(StreamingQueryListener):
 
     Dedup: if a downstream (zone, table) is already running, a pending
     re-trigger flag is set so it re-spawns after the current run finishes.
+
+    Spawning is performed asynchronously in a thread pool so the listener
+    thread returns immediately after the dedup check.
     """
 
     def __init__(
@@ -34,6 +43,8 @@ class StageChainListener(StreamingQueryListener):
         zone_chain: List[str],
         spawn_table_fn: Callable[[str, str], Optional[object]],
         logger: Optional[logging.Logger] = None,
+        max_spawn_workers: int = 4,
+        spark: Optional[SparkSession] = None,
     ):
         """
         Args:
@@ -41,11 +52,22 @@ class StageChainListener(StreamingQueryListener):
             spawn_table_fn: Callable(zone, table_name) -> Optional[StreamingQuery].
                 Spawns a single table in the given zone as availableNow.
             logger: Optional logger instance.
+            max_spawn_workers: Max concurrent spawn threads (default 4).
+            spark: SparkSession to bind on worker threads.  Required in
+                environments (e.g. Fabric) where the active session is not
+                automatically inherited by new threads.
         """
         super().__init__()
         self._zone_chain = zone_chain
         self._spawn_table = spawn_table_fn
+        self._spark = spark
         self.logger = logger or logging.getLogger(__name__)
+
+        # Thread pool for async spawning — keeps the listener thread free
+        self._executor = ThreadPoolExecutor(
+            max_workers=max_spawn_workers,
+            thread_name_prefix="arcflow-spawn",
+        )
 
         # zone -> next zone (derived from chain order)
         self._downstream: Dict[str, str] = {}
@@ -78,6 +100,7 @@ class StageChainListener(StreamingQueryListener):
         self._initial_cascade_done: Set[Tuple[str, str]] = set()
 
         self._lock = threading.Lock()
+        self._pending_futures: list = []
 
     # ── Registration ────────────────────────────────────────────────
 
@@ -109,6 +132,14 @@ class StageChainListener(StreamingQueryListener):
             )
 
     # ── Public helpers (for Controller) ─────────────────────────────
+
+    def shutdown(self, wait: bool = True):
+        """Shut down the spawn thread pool.
+
+        Args:
+            wait: If True, block until all pending spawns complete.
+        """
+        self._executor.shutdown(wait=wait)
 
     def mark_table_active(self, zone: str, table_name: str) -> bool:
         """Mark a (zone, table) as active downstream.
@@ -299,7 +330,12 @@ class StageChainListener(StreamingQueryListener):
     # ── Spawn with dedup ────────────────────────────────────────────
 
     def _try_spawn_downstream_table(self, zone: str, table_name: str):
-        """Spawn a single downstream table with dedup protection."""
+        """Spawn a single downstream table with dedup protection.
+
+        The dedup check runs synchronously on the caller's thread (fast).
+        The actual spawn is submitted to the thread pool so the listener
+        thread is not blocked by ZonePipeline setup / Delta log replay.
+        """
         key = (zone, table_name)
         with self._lock:
             if key in self._active_downstream_tables:
@@ -314,12 +350,49 @@ class StageChainListener(StreamingQueryListener):
         self.logger.info(
             f"StageChainListener: spawning {zone}.{table_name} as availableNow"
         )
+        future = self._executor.submit(self._do_spawn, zone, table_name)
+        with self._lock:
+            self._pending_futures.append(future)
+
+    def wait_for_pending_spawns(self, timeout: float = None):
+        """Block until all submitted spawn futures have completed.
+
+        Useful for testing and clean shutdown.
+        """
+        with self._lock:
+            futures = list(self._pending_futures)
+        for f in futures:
+            f.result(timeout=timeout)
+        with self._lock:
+            # Remove completed futures
+            self._pending_futures = [
+                f for f in self._pending_futures if not f.done()
+            ]
+
+    def _do_spawn(self, zone: str, table_name: str):
+        """Execute the spawn in a worker thread.
+
+        Sets the thread-local active SparkSession on both the Python and
+        Java sides so that Spark catalog operations (e.g. Fabric's
+        TridentMultipartHelper) can resolve table identifiers.
+        """
+        if self._spark is not None:
+            # Java-side: SparkSession.setActiveSession is ThreadLocal
+            try:
+                self._spark._jvm.SparkSession.setActiveSession(
+                    self._spark._jsparkSession
+                )
+            except Exception:
+                pass
+            # Python-side class attributes
+            SparkSession._instantiatedSession = self._spark
+            SparkSession._activeSession = self._spark
+        key = (zone, table_name)
         try:
             query = self._spawn_table(zone, table_name)
             if query:
                 self.register_query(query, zone, 'availableNow', table_name)
             else:
-                # spawn returned None (table not enabled, etc.)
                 with self._lock:
                     self._active_downstream_tables.discard(key)
         except Exception as e:
