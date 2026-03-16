@@ -64,6 +64,7 @@ def create_spark(app_name: str, debug: bool) -> SparkSession:
             .builder
             .appName(app_name)
             .config('spark.databricks.delta.autoCompact.enabled', True)
+            .config('spark.databricks.delta.autoCompact.onCheckpointOnly.enabled', True)
             .config('spark.microsoft.delta.targetFileSize.adaptive.enabled', True)
             .config('spark.microsoft.delta.optimize.fileLevelTarget.enabled', True)
             .config('spark.microsoft.delta.snapshot.driverMode.enabled', True)
