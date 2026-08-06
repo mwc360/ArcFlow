@@ -1,10 +1,9 @@
 """
 Singleton job lock for ArcFlow pipelines.
 
-Prevents duplicate concurrent runs of the same pipeline job using a
-file-based marker lock. The lock file contains JSON metadata for
-debugging stale locks. A background heartbeat thread keeps the lock
-file fresh to prevent false stale-recovery on long-running jobs.
+Prevents duplicate concurrent runs of the same pipeline job. Azure-backed
+locks use a finite renewable blob lease on one persistent marker file.
+Local locks use an exclusive marker plus an owner-specific heartbeat.
 
 Re-entry is automatic within the same Python process.  A module-level
 instance ID (generated once at import time) is written into every lock
@@ -17,11 +16,23 @@ import json
 import logging
 import os
 import platform
+import posixpath
 import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
+
+import fsspec
+from fsspec.asyn import sync
+
+try:
+    from azure.core.exceptions import HttpResponseError, ResourceExistsError
+    _EXCLUSIVE_CREATE_CONFLICTS = (FileExistsError, ResourceExistsError)
+    _AZURE_HTTP_ERRORS = (HttpResponseError,)
+except ImportError:
+    _EXCLUSIVE_CREATE_CONFLICTS = (FileExistsError,)
+    _AZURE_HTTP_ERRORS = ()
 
 # Unique per-process — generated once at import time.
 # Same notebook kernel  → same _PROCESS_INSTANCE_ID → re-entry allowed.
@@ -39,22 +50,15 @@ class JobLock:
     """
     File-based singleton lock to prevent duplicate pipeline runs.
 
-    Writes a JSON marker file to ``<lock_path>/<job_id>.lock``.  If the
-    file already exists the caller retries every *poll_interval* seconds
-    until *timeout_seconds* is reached, then raises ``JobLockError``.
+    Azure-backed paths use one persistent JSON marker protected by a finite
+    blob lease. The lease is renewed in the background and naturally expires
+    if the process dies. Local paths use atomic marker creation and a
+    heartbeat sidecar with stale-lock recovery.
 
-    Stale locks (older than *timeout_seconds*) are automatically recovered.
-
-    While the lock is held a daemon heartbeat thread refreshes the
-    ``acquired_at`` timestamp every ``heartbeat_interval`` seconds
-    (default: ``timeout_seconds // 3``) so that long-running jobs are
-    never mistaken for stale.
-
-    **Instance re-entry:** If the environment variable
-    ``ARCFLOW_INSTANCE_ID`` is set and the existing lock file contains the
-    same value, the lock is silently re-acquired.  This allows a notebook
-    cell to re-create a ``Controller`` without being blocked by the
-    previous instance's lock.
+    **Local instance re-entry:** If the existing lock file contains the same
+    process-level instance ID, the lock is silently re-acquired. This allows
+    a notebook cell to re-create a ``Controller`` without being blocked by
+    the previous instance's lock.
 
     Supports context-manager usage::
 
@@ -69,6 +73,9 @@ class JobLock:
         timeout_seconds: int = 60,
         poll_interval: Optional[int] = None,
         heartbeat_interval: Optional[int] = None,
+        lease_duration_seconds: int = 60,
+        lease_renew_interval: Optional[int] = None,
+        filesystem: Optional[Any] = None,
     ):
         if not job_id:
             raise ValueError("job_id must be a non-empty string")
@@ -78,8 +85,59 @@ class JobLock:
         self.timeout_seconds = timeout_seconds
         self.poll_interval = poll_interval or max(timeout_seconds // 10, 5)
         self.heartbeat_interval = heartbeat_interval or max(timeout_seconds // 3, 10)
-        self._lock_file = os.path.join(lock_path, f"{job_id}.lock")
+        self.lease_duration_seconds = lease_duration_seconds
+        self.lease_renew_interval = (
+            lease_renew_interval or max(lease_duration_seconds // 3, 5)
+        )
+        try:
+            if filesystem is None:
+                self._fs, fs_lock_path = fsspec.core.url_to_fs(lock_path)
+            else:
+                self._fs = filesystem
+                fs_lock_path = filesystem._strip_protocol(lock_path)
+        except (ImportError, ValueError) as e:
+            raise ValueError(
+                f"Unsupported job lock path '{lock_path}': {e}"
+            ) from e
+
+        self._fs_lock_path = fs_lock_path.rstrip("/")
+        self._fs_lock_file = posixpath.join(
+            self._fs_lock_path, f"{job_id}.lock"
+        )
+        protocol = self._fs.protocol
+        if isinstance(protocol, (tuple, list)):
+            protocol = protocol[0]
+        self._protocol = protocol
+        self._uses_lease = protocol in ("abfs", "abfss", "az")
+        if self._uses_lease:
+            if not 15 <= lease_duration_seconds <= 60:
+                raise ValueError(
+                    "lease_duration_seconds must be between 15 and 60"
+                )
+            if not 0 < self.lease_renew_interval < lease_duration_seconds:
+                raise ValueError(
+                    "lease_renew_interval must be greater than 0 and less "
+                    "than lease_duration_seconds"
+                )
+        if protocol in ("file", "local"):
+            self._lock_file = os.path.normpath(self._fs_lock_file)
+        else:
+            self._lock_file = f"{lock_path.rstrip('/')}/{job_id}.lock"
         self._held = False
+        self._lease = None
+        self._blob_client = None
+        if self._uses_lease:
+            try:
+                container, blob, _ = self._fs.split_path(self._fs_lock_file)
+                self._blob_client = self._fs.service_client.get_blob_client(
+                    container=container,
+                    blob=blob,
+                )
+            except (AttributeError, TypeError, ValueError) as e:
+                raise ValueError(
+                    f"Azure filesystem backend '{self._protocol}' does not "
+                    "expose the blob lease API"
+                ) from e
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread: Optional[threading.Thread] = None
 
@@ -100,29 +158,37 @@ class JobLock:
             logger.debug(f"Lock already held for job '{self.job_id}', skipping acquire")
             return
 
+        if self._uses_lease:
+            self._acquire_lease()
+            return
+
         deadline = time.monotonic() + self.timeout_seconds
         first_attempt = True
 
         while True:
-            existing = self._read_lock_file()
-
-            if existing is None:
-                self._write_lock_file()
+            if self._create_lock_file_exclusive():
                 self._held = True
+                self._write_heartbeat_file()
                 self._start_heartbeat()
-                logger.info(f"Job lock acquired: {self.job_id} ({self._lock_file})")
+                logger.info(
+                    f"Job lock acquired: {self.job_id} "
+                    f"({self._lock_file}, backend={self._protocol})"
+                )
                 return
 
-            # Same-instance re-entry: the env var ARCFLOW_INSTANCE_ID matches
-            # the lock file.  This covers notebook re-runs where a previous
+            existing = self._read_lock_file()
+            if existing is None:
+                continue
+
+            # Same-instance re-entry covers notebook re-runs where a previous
             # Controller was not cleaned up.
             if self._is_same_instance(existing):
                 logger.info(
                     f"Re-acquiring lock for job '{self.job_id}' "
                     f"(same instance_id={self.get_instance_id()!r})"
                 )
-                self._write_lock_file()
                 self._held = True
+                self._write_heartbeat_file()
                 self._start_heartbeat()
                 return
 
@@ -134,12 +200,8 @@ class JobLock:
                     f"instance_id={existing.get('instance_id')}, "
                     f"hostname={existing.get('hostname')})"
                 )
-                self._delete_lock_file()
-                self._write_lock_file()
-                self._held = True
-                self._start_heartbeat()
-                logger.info(f"Job lock acquired (stale recovery): {self.job_id}")
-                return
+                if self._delete_stale_lock(existing):
+                    continue
 
             if first_attempt:
                 logger.warning(
@@ -164,18 +226,31 @@ class JobLock:
             time.sleep(self.poll_interval)
 
     def release(self) -> None:
-        """Release the lock by deleting the lock file. Idempotent."""
+        """Release the lease or delete the local lock marker. Idempotent."""
         if not self._held:
             return
+        if self._uses_lease:
+            self._release_lease()
+            return
         self._stop_heartbeat()
-        self._delete_lock_file()
+        existing = self._read_lock_file()
+        if existing is not None and self._is_same_instance(existing):
+            self._delete_lock_file()
+        elif existing is not None:
+            logger.warning(
+                f"Job lock ownership changed for '{self.job_id}'; "
+                f"not deleting lock owned by {existing.get('instance_id')!r}"
+            )
+        self._delete_heartbeat_file(self.get_instance_id())
         self._held = False
         logger.info(f"Job lock released: {self.job_id}")
 
     @property
     def is_locked(self) -> bool:
-        """Check whether the lock file currently exists on disk."""
-        return os.path.exists(self._lock_file)
+        """Check whether this instance holds a lease or a local marker exists."""
+        if self._uses_lease:
+            return self._held
+        return self._fs.exists(self._fs_lock_file)
 
     @property
     def held(self) -> bool:
@@ -193,9 +268,9 @@ class JobLock:
 
     # ── internals ───────────────────────────────────────────────────
 
-    def _write_lock_file(self) -> None:
-        os.makedirs(self.lock_path, exist_ok=True)
-        payload = {
+    def _lock_payload(self) -> dict:
+        """Build immutable ownership metadata for a new lock."""
+        return {
             "job_id": self.job_id,
             "acquired_at": datetime.now(timezone.utc).isoformat(),
             "timeout_seconds": self.timeout_seconds,
@@ -203,12 +278,172 @@ class JobLock:
             "hostname": platform.node(),
             "pid": os.getpid(),
         }
-        with open(self._lock_file, "w") as f:
-            json.dump(payload, f, indent=2)
+
+    def _acquire_lease(self) -> None:
+        """Acquire a finite Azure blob lease, retrying until timeout."""
+        self._ensure_lease_marker()
+        deadline = time.monotonic() + self.timeout_seconds
+        first_attempt = True
+
+        while True:
+            try:
+                lease = sync(
+                    self._fs.loop,
+                    self._blob_client.acquire_lease,
+                    lease_duration=self.lease_duration_seconds,
+                )
+            except _AZURE_HTTP_ERRORS as e:
+                if not self._is_lease_conflict(e):
+                    raise JobLockError(
+                        f"Failed to acquire Azure lease for job "
+                        f"'{self.job_id}': {e}"
+                    ) from e
+
+                if first_attempt:
+                    logger.warning(
+                        f"Job '{self.job_id}' is already leased. Waiting up "
+                        f"to {self.timeout_seconds}s for release..."
+                    )
+                    first_attempt = False
+
+                if time.monotonic() >= deadline:
+                    raise JobLockError(
+                        f"Failed to acquire lock for job '{self.job_id}' "
+                        f"after {self.timeout_seconds}s because the OneLake "
+                        f"lease remained held. Lock file: {self._lock_file}"
+                    ) from e
+
+                time.sleep(self.poll_interval)
+                continue
+
+            self._lease = lease
+            try:
+                self._write_leased_payload()
+            except (OSError,) + _AZURE_HTTP_ERRORS as e:
+                try:
+                    sync(self._fs.loop, lease.release)
+                finally:
+                    self._lease = None
+                raise JobLockError(
+                    f"Lease acquired but ownership metadata could not be "
+                    f"written for job '{self.job_id}': {e}"
+                ) from e
+
+            self._held = True
+            self._cleanup_legacy_heartbeat_files()
+            self._start_heartbeat()
+            logger.info(
+                f"Job lock acquired: {self.job_id} "
+                f"({self._lock_file}, backend={self._protocol}, "
+                f"lease={self.lease_duration_seconds}s)"
+            )
+            return
+
+    def _ensure_lease_marker(self) -> None:
+        """Create the persistent lease marker once."""
+        self._fs.makedirs(self._fs_lock_path, exist_ok=True)
+        try:
+            self._fs.pipe_file(
+                self._fs_lock_file,
+                b"{}",
+                overwrite=False,
+            )
+        except _EXCLUSIVE_CREATE_CONFLICTS:
+            pass
+
+    @staticmethod
+    def _is_lease_conflict(error: Exception) -> bool:
+        error_code = str(getattr(error, "error_code", ""))
+        return (
+            getattr(error, "status_code", None) in (409, 412)
+            or error_code in {
+                "LeaseAlreadyPresent",
+                "LeaseIsBreakingAndCannotBeAcquired",
+                "LeaseIdMismatchWithLeaseOperation",
+            }
+        )
+
+    def _write_leased_payload(self) -> None:
+        payload = json.dumps(self._lock_payload(), indent=2).encode("utf-8")
+        sync(
+            self._fs.loop,
+            self._blob_client.upload_blob,
+            data=payload,
+            overwrite=True,
+            lease=self._lease,
+        )
+
+    def _release_lease(self) -> None:
+        self._stop_heartbeat()
+        lease = self._lease
+        self._lease = None
+        try:
+            if lease is not None:
+                sync(self._fs.loop, lease.release)
+        except _AZURE_HTTP_ERRORS as e:
+            logger.warning(
+                f"Failed to release Azure lease for job '{self.job_id}': {e}"
+            )
+        finally:
+            self._held = False
+        logger.info(f"Job lock released: {self.job_id}")
+
+    def _cleanup_legacy_heartbeat_files(self) -> None:
+        try:
+            for path in self._fs.glob(f"{self._fs_lock_file}.*.heartbeat"):
+                self._fs.rm(path)
+        except OSError as e:
+            logger.warning(
+                f"Could not remove legacy heartbeat files for "
+                f"'{self.job_id}': {e}"
+            )
+
+    def _create_lock_file_exclusive(self) -> bool:
+        """Atomically create the ownership marker if it does not exist."""
+        self._fs.makedirs(self._fs_lock_path, exist_ok=True)
+        payload = json.dumps(self._lock_payload(), indent=2).encode("utf-8")
+        try:
+            with self._fs.open(self._fs_lock_file, "xb") as f:
+                f.write(payload)
+            return True
+        except _EXCLUSIVE_CREATE_CONFLICTS:
+            return False
+        except NotImplementedError as e:
+            if self._protocol not in ("abfs", "abfss", "az"):
+                raise JobLockError(
+                    f"Filesystem backend '{self._protocol}' does not support "
+                    f"exclusive lock creation with mode 'xb'"
+                ) from e
+            try:
+                self._fs.pipe_file(
+                    self._fs_lock_file,
+                    payload,
+                    overwrite=False,
+                )
+                return True
+            except _EXCLUSIVE_CREATE_CONFLICTS:
+                return False
+            except TypeError as pipe_error:
+                raise JobLockError(
+                    f"Azure filesystem backend '{self._protocol}' supports "
+                    "neither mode 'xb' nor atomic pipe_file(overwrite=False)"
+                ) from pipe_error
+
+    def _heartbeat_file(self, instance_id: str) -> str:
+        return f"{self._fs_lock_file}.{instance_id}.heartbeat"
+
+    def _write_heartbeat_file(self) -> None:
+        payload = {
+            "instance_id": self.get_instance_id(),
+            "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+        }
+        heartbeat_file = self._heartbeat_file(self.get_instance_id())
+        with self._fs.open(heartbeat_file, "wb") as f:
+            f.write(json.dumps(payload).encode("utf-8"))
 
     def _read_lock_file(self) -> Optional[dict]:
         try:
-            with open(self._lock_file, "r") as f:
+            with self._fs.open(self._fs_lock_file, "r") as f:
                 return json.load(f)
         except FileNotFoundError:
             return None
@@ -216,22 +451,68 @@ class JobLock:
             logger.warning(f"Corrupt lock file '{self._lock_file}': {e}. Treating as stale.")
             return {"acquired_at": "1970-01-01T00:00:00+00:00"}
 
+    def _read_heartbeat_file(self, instance_id: Optional[str]) -> Optional[dict]:
+        if not instance_id:
+            return None
+        try:
+            with self._fs.open(self._heartbeat_file(instance_id), "r") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(
+                f"Corrupt heartbeat file for job '{self.job_id}': {e}. "
+                "Falling back to acquired_at."
+            )
+            return None
+
     def _delete_lock_file(self) -> None:
         try:
-            os.remove(self._lock_file)
+            self._fs.rm(self._fs_lock_file)
         except FileNotFoundError:
             pass
 
+    def _delete_heartbeat_file(self, instance_id: Optional[str]) -> None:
+        if not instance_id:
+            return
+        try:
+            self._fs.rm(self._heartbeat_file(instance_id))
+        except FileNotFoundError:
+            pass
+
+    def _delete_stale_lock(self, observed: dict) -> bool:
+        """Delete only the stale owner that was observed by the caller."""
+        current = self._read_lock_file()
+        if current is None:
+            return True
+        if (
+            current.get("instance_id") != observed.get("instance_id")
+            or current.get("acquired_at") != observed.get("acquired_at")
+            or not self._is_stale(current)
+        ):
+            return False
+        self._delete_lock_file()
+        self._delete_heartbeat_file(current.get("instance_id"))
+        return True
+
     def _start_heartbeat(self) -> None:
-        """Start a daemon thread that refreshes the lock file timestamp."""
+        """Start a daemon thread that renews lease or local heartbeat."""
         self._heartbeat_stop.clear()
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop,
-            name=f"arcflow-lock-heartbeat-{self.job_id}",
+            name=f"arcflow-lock-renewal-{self.job_id}",
             daemon=True,
         )
         self._heartbeat_thread.start()
-        logger.debug(f"Heartbeat started for job '{self.job_id}' (interval={self.heartbeat_interval}s)")
+        interval = (
+            self.lease_renew_interval
+            if self._uses_lease
+            else self.heartbeat_interval
+        )
+        logger.debug(
+            f"Lock renewal started for job '{self.job_id}' "
+            f"(interval={interval}s)"
+        )
 
     def _stop_heartbeat(self) -> None:
         """Signal the heartbeat thread to stop and wait for it."""
@@ -243,25 +524,52 @@ class JobLock:
         logger.debug(f"Heartbeat stopped for job '{self.job_id}'")
 
     def _heartbeat_loop(self) -> None:
-        """Background loop that rewrites the lock file to refresh acquired_at."""
-        while not self._heartbeat_stop.wait(timeout=self.heartbeat_interval):
+        """Refresh the owner heartbeat while ownership remains unchanged."""
+        interval = (
+            self.lease_renew_interval
+            if self._uses_lease
+            else self.heartbeat_interval
+        )
+        while not self._heartbeat_stop.wait(timeout=interval):
             try:
-                self._write_lock_file()
-                logger.debug(f"Heartbeat: refreshed lock file for job '{self.job_id}'")
-            except OSError as e:
-                logger.warning(f"Heartbeat: failed to refresh lock file for job '{self.job_id}': {e}")
+                if self._uses_lease:
+                    sync(self._fs.loop, self._lease.renew)
+                    logger.debug(
+                        f"Lease renewed for job '{self.job_id}'"
+                    )
+                    continue
+                existing = self._read_lock_file()
+                if existing is None or not self._is_same_instance(existing):
+                    logger.warning(
+                        f"Heartbeat stopped for job '{self.job_id}' because "
+                        "lock ownership was lost"
+                    )
+                    self._held = False
+                    return
+                self._write_heartbeat_file()
+                logger.debug(f"Heartbeat: refreshed job '{self.job_id}'")
+            except (OSError,) + _AZURE_HTTP_ERRORS as e:
+                self._held = False
+                logger.error(
+                    f"Job lock renewal failed for '{self.job_id}'; "
+                    f"ownership is no longer guaranteed: {e}"
+                )
+                return
 
     def _is_same_instance(self, lock_data: dict) -> bool:
         """Check if the lock was written by this same logical instance."""
         return lock_data.get("instance_id") == self.get_instance_id()
 
     def _is_stale(self, lock_data: dict) -> bool:
-        acquired_str = lock_data.get("acquired_at")
-        if not acquired_str:
+        timestamp = lock_data.get("acquired_at")
+        heartbeat = self._read_heartbeat_file(lock_data.get("instance_id"))
+        if heartbeat is not None:
+            timestamp = heartbeat.get("heartbeat_at", timestamp)
+        if not timestamp:
             return True
         try:
-            acquired_at = datetime.fromisoformat(acquired_str)
-            age_seconds = (datetime.now(timezone.utc) - acquired_at).total_seconds()
+            last_seen = datetime.fromisoformat(timestamp)
+            age_seconds = (datetime.now(timezone.utc) - last_seen).total_seconds()
             # Use holder's timeout if recorded, otherwise fall back to our own
             holder_timeout = lock_data.get("timeout_seconds", self.timeout_seconds)
             return age_seconds > holder_timeout

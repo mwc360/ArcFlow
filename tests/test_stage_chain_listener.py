@@ -470,6 +470,62 @@ class TestSpawnFailure:
         # Active flag should be cleared despite error
         assert ('silver', 'orders') not in listener._active_downstream_tables
 
+
+class TestIdleTracking:
+    def test_registered_query_keeps_listener_busy_until_termination(self):
+        listener = StageChainListener(['bronze'], MagicMock())
+        query = _make_query("bronze_orders", "id-1")
+
+        listener.register_query(query, 'bronze', 'availableNow', 'orders')
+
+        assert not listener.wait_until_idle(timeout=0)
+        listener.onQueryTerminated(_make_terminated_event("id-1"))
+        assert listener.wait_until_idle(timeout=0.1)
+
+    def test_downstream_query_must_terminate_before_idle(self):
+        downstream_query = _make_query("silver_orders", "id-silver")
+        listener = StageChainListener(
+            ['bronze', 'silver'],
+            MagicMock(return_value=downstream_query),
+        )
+        listener.register_query(
+            _make_query("bronze_orders", "id-bronze"),
+            'bronze', 'availableNow', 'orders',
+        )
+
+        listener.onQueryTerminated(_make_terminated_event("id-bronze"))
+        listener.wait_for_pending_spawns()
+
+        assert not listener.wait_until_idle(timeout=0)
+        listener.onQueryTerminated(_make_terminated_event("id-silver"))
+        assert listener.wait_until_idle(timeout=0.1)
+
+    def test_pending_spawn_keeps_listener_busy(self):
+        spawn_started = threading.Event()
+        allow_spawn_to_finish = threading.Event()
+
+        def blocking_spawn(zone, table):
+            spawn_started.set()
+            allow_spawn_to_finish.wait(timeout=2)
+            return None
+
+        listener = StageChainListener(
+            ['bronze', 'silver'],
+            blocking_spawn,
+        )
+        listener.register_query(
+            _make_query("bronze_orders", "id-bronze"),
+            'bronze', 'availableNow', 'orders',
+        )
+
+        listener.onQueryTerminated(_make_terminated_event("id-bronze"))
+        assert spawn_started.wait(timeout=1)
+        assert not listener.wait_until_idle(timeout=0)
+
+        allow_spawn_to_finish.set()
+        listener.wait_for_pending_spawns()
+        assert listener.wait_until_idle(timeout=0.1)
+
     def test_clears_active_flag_when_spawn_returns_none(self):
         spawn_fn = MagicMock(return_value=None)
         listener = StageChainListener(['bronze', 'silver'], spawn_fn)

@@ -7,6 +7,7 @@ Coordinates all pipelines:
 - Stream lifecycle management
 """
 import logging
+import threading
 from typing import Callable, List, Dict, Optional, Tuple, Set
 from pyspark.sql import SparkSession
 from pyspark.sql.streaming import StreamingQuery
@@ -63,6 +64,9 @@ class Controller:
         # Job lock (opt-in via config)
         self._job_lock: Optional[JobLock] = None
         self._lock_held_by_full_pipeline = False
+        self._lock_monitor_thread: Optional[threading.Thread] = None
+        self._lock_monitor_stop = threading.Event()
+        self._lock_monitor_generation = 0
         if config.get('job_lock_enabled', False):
             job_id = config.get('job_id')
             if job_id:
@@ -72,6 +76,12 @@ class Controller:
                     timeout_seconds=config.get('job_lock_timeout_seconds', 3600),
                     poll_interval=config.get('job_lock_poll_interval'),
                     heartbeat_interval=config.get('job_lock_heartbeat_interval'),
+                    lease_duration_seconds=config.get(
+                        'job_lock_lease_duration_seconds', 60
+                    ),
+                    lease_renew_interval=config.get(
+                        'job_lock_lease_renew_interval', 20
+                    ),
                 )
             else:
                 self.logger.warning("job_lock_enabled=True but no job_id provided — lock disabled")
@@ -181,10 +191,20 @@ class Controller:
             lock_acquired_here = True
 
         try:
-            return self._run_zone_pipeline_inner(zone, source_zone, table_subset)
-        finally:
+            queries = self._run_zone_pipeline_inner(
+                zone, source_zone, table_subset
+            )
+        except Exception:
             if lock_acquired_here:
                 self._job_lock.release()
+            raise
+
+        if lock_acquired_here:
+            if self.is_streaming and queries:
+                self._start_lock_release_monitor()
+            else:
+                self._job_lock.release()
+        return queries
 
     def _run_zone_pipeline_inner(
         self,
@@ -398,9 +418,12 @@ class Controller:
             self._release_job_lock()
             raise
         else:
-            # For non-streaming or availableNow, release immediately after completion.
-            # For continuous streams, lock is released by stop_all().
-            if not self.is_streaming or not self.stream_manager.get_active_queries():
+            if self.is_streaming and (
+                self._chain_listener is not None
+                or self.stream_manager.get_active_queries()
+            ):
+                self._start_lock_release_monitor()
+            else:
                 self._release_job_lock()
     
     def _run_sequential_pipeline(
@@ -569,7 +592,7 @@ class Controller:
         if self.is_streaming and await_termination:
             self.logger.info("Awaiting streaming termination (blocking)...")
             self.logger.info("Tip: Set await_termination=False for interactive notebooks")
-            self.stream_manager.await_all()
+            self.await_completion()
         elif self.is_streaming:
             self.logger.info("Streams started (non-blocking). Use controller.stream_manager.await_all() to wait for completion.")
     
@@ -586,14 +609,28 @@ class Controller:
         """
         if self.is_streaming:
             self.logger.info("Awaiting all streaming queries to complete...")
-            self.stream_manager.await_all()
+            try:
+                if self._chain_listener is not None:
+                    self._chain_listener.wait_until_idle()
+                while True:
+                    active_queries = self.stream_manager.get_active_queries()
+                    if not active_queries:
+                        break
+                    for query in active_queries:
+                        query.awaitTermination()
+            finally:
+                self._release_job_lock()
             self.logger.info("All streaming queries completed")
         else:
             self.logger.info("No streaming queries to await (batch mode)")
+            self._release_job_lock()
     
     def stop_all(self):
         """Stop all streaming queries, remove the chain listener, release job lock, and reset state"""
         self.logger.info("Stopping all streams...")
+        self._lock_monitor_generation += 1
+        self._lock_monitor_stop.set()
+        self._lock_monitor_thread = None
         self.stream_manager.stop_all()
         try:
             self.spark.streams.resetTerminated()
@@ -616,6 +653,50 @@ class Controller:
         if self._job_lock and self._job_lock.held:
             self._job_lock.release()
         self._lock_held_by_full_pipeline = False
+
+    def _start_lock_release_monitor(self):
+        """Release the lock after all root and downstream stream work finishes."""
+        if (
+            self._lock_monitor_thread is not None
+            and self._lock_monitor_thread.is_alive()
+        ):
+            return
+
+        monitor_stop = threading.Event()
+        self._lock_monitor_stop = monitor_stop
+        self._lock_monitor_generation += 1
+        monitor_generation = self._lock_monitor_generation
+        chain_listener = self._chain_listener
+
+        def monitor():
+            try:
+                if chain_listener is not None:
+                    while not monitor_stop.is_set():
+                        if chain_listener.wait_until_idle(timeout=0.5):
+                            break
+
+                while not monitor_stop.is_set():
+                    active_queries = self.stream_manager.get_active_queries()
+                    if not active_queries:
+                        break
+                    for query in active_queries:
+                        if monitor_stop.is_set():
+                            break
+                        query.awaitTermination()
+            except Exception as e:
+                self.logger.error(
+                    f"Job lock completion monitor failed: {e}"
+                )
+            finally:
+                if monitor_generation == self._lock_monitor_generation:
+                    self._release_job_lock()
+
+        self._lock_monitor_thread = threading.Thread(
+            target=monitor,
+            name="arcflow-lock-release-monitor",
+            daemon=True,
+        )
+        self._lock_monitor_thread.start()
     
     def get_status(self, as_dataframe: bool = False):
         """

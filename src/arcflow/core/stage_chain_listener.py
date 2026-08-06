@@ -101,6 +101,9 @@ class StageChainListener(StreamingQueryListener):
 
         self._lock = threading.Lock()
         self._pending_futures: list = []
+        self._pending_spawn_count = 0
+        self._idle_event = threading.Event()
+        self._idle_event.set()
 
     # ── Registration ────────────────────────────────────────────────
 
@@ -121,6 +124,7 @@ class StageChainListener(StreamingQueryListener):
             table_name: FlowConfig.name this query corresponds to.
         """
         with self._lock:
+            self._idle_event.clear()
             self._query_zone[query.name] = zone
             self._query_trigger[query.name] = trigger_mode
             self._id_to_name[str(query.id)] = query.name
@@ -130,6 +134,18 @@ class StageChainListener(StreamingQueryListener):
                 f"(zone={zone}, table={table_name}, trigger={trigger_mode}, "
                 f"id={query.id})"
             )
+        if not query.isActive:
+            progress = query.lastProgress
+            if progress:
+                num_input_rows = (
+                    progress.get("numInputRows")
+                    if isinstance(progress, dict)
+                    else getattr(progress, "numInputRows", None)
+                )
+                if num_input_rows is not None and num_input_rows > 0:
+                    with self._lock:
+                        self._table_had_output.add((zone, table_name))
+            self._handle_query_terminated(str(query.id))
 
     # ── Public helpers (for Controller) ─────────────────────────────
 
@@ -151,6 +167,7 @@ class StageChainListener(StreamingQueryListener):
             if key in self._active_downstream_tables:
                 return False
             self._active_downstream_tables.add(key)
+            self._idle_event.clear()
             return True
 
     def clear_table_active(self, zone: str, table_name: str):
@@ -158,6 +175,22 @@ class StageChainListener(StreamingQueryListener):
         key = (zone, table_name)
         with self._lock:
             self._active_downstream_tables.discard(key)
+            self._update_idle_locked()
+
+    def _update_idle(self):
+        with self._lock:
+            self._update_idle_locked()
+
+    def _update_idle_locked(self):
+        if (
+            not self._id_to_name
+            and not self._active_downstream_tables
+            and not self._pending_retrigger_tables
+            and self._pending_spawn_count == 0
+        ):
+            self._idle_event.set()
+        else:
+            self._idle_event.clear()
 
     # ── Listener callbacks ──────────────────────────────────────────
 
@@ -227,8 +260,10 @@ class StageChainListener(StreamingQueryListener):
         spawned downstream table or an upstream (root) query.
         Cleans up per-query metadata to prevent unbounded memory growth.
         """
-        query_id = str(event.id)
+        self._handle_query_terminated(str(event.id))
 
+    def _handle_query_terminated(self, query_id: str):
+        """Handle one termination event, including fast pre-registration exits."""
         with self._lock:
             query_name = self._id_to_name.pop(query_id, None)
             if query_name is None:
@@ -257,6 +292,11 @@ class StageChainListener(StreamingQueryListener):
             self._handle_downstream_termination(zone, table_name)
         else:
             self._handle_upstream_termination(zone, table_name, trigger_mode)
+        self._update_idle()
+
+    def wait_until_idle(self, timeout: float = None) -> bool:
+        """Wait until no registered queries or downstream work remain."""
+        return self._idle_event.wait(timeout=timeout)
 
     # ── Internal handlers ───────────────────────────────────────────
 
@@ -351,6 +391,8 @@ class StageChainListener(StreamingQueryListener):
                 )
                 return
             self._active_downstream_tables.add(key)
+            self._pending_spawn_count += 1
+            self._idle_event.clear()
 
         self.logger.info(
             f"StageChainListener: spawning {zone}.{table_name} as availableNow"
@@ -407,3 +449,7 @@ class StageChainListener(StreamingQueryListener):
             )
             with self._lock:
                 self._active_downstream_tables.discard(key)
+        finally:
+            with self._lock:
+                self._pending_spawn_count -= 1
+                self._update_idle_locked()

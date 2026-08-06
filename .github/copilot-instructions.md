@@ -288,12 +288,14 @@ controller.run_full_pipeline()   # lock auto-acquired/released
 
 - **`JobLock`** — core class. Supports `acquire()` / `release()` and context manager (`with JobLock(...):`)
 - **`JobLockError`** — raised when lock cannot be acquired within timeout
+- **Storage**: Paths are resolved with `fsspec`; local and Fabric `abfss://` paths are supported when the protocol backend is registered
+- **OneLake acquisition**: A single persistent marker is protected by a finite Azure blob lease (60s default, renewed every 20s)
 - **Lock file**: JSON at `<lock_path>/<job_id>.lock` with `job_id`, `acquired_at`, `timeout_seconds`, `instance_id`, `hostname`, `pid`
 - **Instance re-entry**: An auto-generated UUID per process is written to the lock file. Re-creating a Controller in the same session (notebook re-run) silently re-acquires. A different Spark job (separate process) gets a different UUID and will block.
-- **Heartbeat**: Background daemon thread refreshes `acquired_at` every `timeout_seconds // 3` (min 10s) to prevent false stale recovery on long-running jobs
-- **Stale recovery**: If lock file age exceeds the **holder's** recorded `timeout_seconds`, it is auto-recovered
-- **Controller integration**: Lock acquired at start of `run_full_pipeline()` / `run_zone_pipeline()`, released on completion or error. Nested calls skip re-acquisition. `stop_all()` also releases.
-- **Config keys**: `job_id`, `job_lock_enabled` (default `False`), `job_lock_path`, `job_lock_timeout_seconds` (default `3600`), `job_lock_poll_interval` (default `30`), `job_lock_heartbeat_interval` (default `timeout_seconds // 3`, min 10s)
+- **Local heartbeat**: Local filesystems use an owner-specific heartbeat sidecar and stale recovery
+- **Lease expiry**: OneLake leases expire automatically after a holder crash; no stale-file recovery is needed
+- **Controller integration**: Lock acquired at start of `run_full_pipeline()` / `run_zone_pipeline()`, released after root streams, downstream streams, queued spawns, and retriggers complete. Nested calls skip re-acquisition. `stop_all()` also releases.
+- **Config keys**: `job_id`, `job_lock_enabled`, `job_lock_path`, `job_lock_timeout_seconds`, `job_lock_poll_interval`, `job_lock_heartbeat_interval`, `job_lock_lease_duration_seconds` (default `60`), `job_lock_lease_renew_interval` (default `20`)
 
 ## Coding Conventions
 

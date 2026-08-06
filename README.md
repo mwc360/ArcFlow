@@ -185,7 +185,7 @@ The lock is **opt-in** — enable it by setting `job_lock_enabled` and providing
 
 ### Automatic (Controller-integrated)
 
-When enabled, the lock is automatically acquired at the start of `run_full_pipeline()` or `run_zone_pipeline()` and released on completion (or error). Nested calls (e.g., `run_full_pipeline` calling `run_zone_pipeline` internally) do not re-acquire.
+When enabled, the lock is automatically acquired at the start of `run_full_pipeline()` or `run_zone_pipeline()` and released after all root and downstream streaming work completes (or on error). Nested calls (e.g., `run_full_pipeline` calling `run_zone_pipeline` internally) do not re-acquire.
 
 ```python
 from arcflow import Controller, get_config
@@ -193,16 +193,21 @@ from arcflow import Controller, get_config
 config = get_config({
     'job_id': 'shipment-etl-prod',       # unique identifier for this job (scopes the lock)
     'job_lock_enabled': True,             # enable singleton lock
-    'job_lock_path': 'Files/locks/',      # directory for lock files
+    'job_lock_path': 'abfss://<workspace>@<onelake-host>/<lakehouse>/Files/locks/',
     'job_lock_timeout_seconds': 1800,     # wait up to 30 min for existing lock
-    # poll_interval and heartbeat_interval are auto-derived from timeout_seconds
-    # (see Derived Intervals below) — override only if needed
+    'job_lock_lease_duration_seconds': 60,
+    'job_lock_lease_renew_interval': 20,
 })
 
 controller = Controller(spark, config, tables)
-controller.run_full_pipeline()   # lock acquired here, released on completion
+controller.run_full_pipeline()   # released after root and downstream streams complete
 controller.stop_all()            # also releases lock if still held
 ```
+
+Local paths are also supported. ArcFlow resolves lock paths with `fsspec`, so
+an unavailable protocol fails clearly instead of being written as a
+driver-local directory. Fabric environments must provide a registered ABFSS
+fsspec backend.
 
 ### Manual (Context Manager)
 
@@ -220,18 +225,22 @@ with JobLock(job_id='my-etl-job', lock_path='Files/locks/', timeout_seconds=600)
 
 | Scenario | Behavior |
 |---|---|
-| Lock not held | Acquire immediately, write lock file |
-| Lock held by another run | Wait and retry every `poll_interval` seconds |
+| OneLake lock not held | Acquire a finite lease on the persistent marker |
+| OneLake lock held by another run | Wait and retry every `poll_interval` seconds |
 | Wait exceeds `timeout_seconds` | Raise `JobLockError` |
-| Same process (notebook re-run) | Re-acquire immediately (auto-detected via instance ID) |
-| Lock older than holder's timeout | Auto-recover as stale (log warning) |
-| Corrupt lock file | Treated as stale, auto-recovered |
+| OneLake holder crashes | Lease expires automatically, allowing acquisition |
+| Local lock older than holder's timeout | Auto-recover as stale |
+| Local same process (notebook re-run) | Re-acquire using the process instance ID |
 | Pipeline error | Lock released in `finally` block |
-| Long-running job | Heartbeat thread refreshes lock file to prevent false stale recovery |
+| Long-running OneLake job | Lease renewed every `job_lock_lease_renew_interval` |
+| Event-driven pipeline | Release after root streams, downstream streams, queued spawns, and retriggers complete |
 
 ### Session Re-entry
 
-The lock file includes an auto-generated `instance_id` (a UUID created once per Python process at import time). If a new `Controller` is created in the same session — e.g. re-running a notebook cell — it sees its own `instance_id` in the lock file and re-acquires silently. A different Spark job (separate process) gets a different UUID and will block as expected.
+Local lock files include an auto-generated `instance_id` created once per
+Python process. Local notebook re-entry recognizes that ID. OneLake ownership
+is enforced by the server-side lease instead; another Controller waits for the
+active lease to be released or expire.
 
 ```python
 # First run — acquires lock
@@ -243,9 +252,15 @@ controller = Controller(spark, config, tables)
 controller.run_full_pipeline()
 ```
 
-### Heartbeat
+### OneLake Lease Renewal
 
-While the lock is held, a background daemon thread rewrites the lock file to keep `acquired_at` fresh. This prevents a legitimate long-running job from being mistaken for stale by another instance.
+OneLake uses a single persistent marker protected by a finite Azure blob
+lease. The default 60-second lease is renewed every 20 seconds. If the process
+dies, renewal stops and OneLake expires the lease automatically. The marker
+remains available for the next lease holder, so there is only one file per job.
+
+Local filesystems retain the heartbeat-sidecar implementation because they do
+not expose Azure leases.
 
 ### Derived Intervals
 
@@ -260,7 +275,7 @@ Override either interval explicitly if the defaults don't suit your workload.
 
 ### Lock File Format
 
-The lock file (`<lock_path>/<job_id>.lock`) is human-readable JSON for debugging:
+The lock marker (`<lock_path>/<job_id>.lock`) is human-readable JSON:
 
 ```json
 {
@@ -273,6 +288,9 @@ The lock file (`<lock_path>/<job_id>.lock`) is human-readable JSON for debugging
 }
 ```
 
+For OneLake, the JSON describes the current or most recent lease holder; the
+lease itself is authoritative.
+
 ### Configuration Reference
 
 | Key | Type | Default | Description |
@@ -282,7 +300,9 @@ The lock file (`<lock_path>/<job_id>.lock`) is human-readable JSON for debugging
 | `job_lock_path` | `str` | `"Files/locks/"` | Directory for lock files |
 | `job_lock_timeout_seconds` | `int` | `3600` | Max wait time before failing (seconds) |
 | `job_lock_poll_interval` | `int` | `None` | Retry interval while waiting (default: `timeout_seconds // 10`, min 5s) |
-| `job_lock_heartbeat_interval` | `int` | `None` | Lock file refresh interval (default: `timeout_seconds // 3`, min 10s) |
+| `job_lock_heartbeat_interval` | `int` | `None` | Local heartbeat interval (default: `timeout_seconds // 3`, min 10s) |
+| `job_lock_lease_duration_seconds` | `int` | `60` | OneLake finite lease duration (15–60 seconds) |
+| `job_lock_lease_renew_interval` | `int` | `20` | Seconds between OneLake lease renewals |
 
 ## Development vs Production
 

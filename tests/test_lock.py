@@ -2,8 +2,11 @@
 
 import json
 import os
+import threading
 import time
+import uuid
 from datetime import datetime, timezone, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -112,6 +115,189 @@ class TestAcquireRelease:
         lock.acquire()
         assert os.path.isdir(nested)
         lock.release()
+
+    def test_memory_filesystem_uses_exclusive_create(self):
+        lock_path = f"memory://arcflow-lock-{uuid.uuid4().hex}"
+        first = JobLock(job_id="exclusive", lock_path=lock_path)
+        second = JobLock(job_id="exclusive", lock_path=lock_path)
+        first.get_instance_id = lambda: "first-owner"
+        second.get_instance_id = lambda: "second-owner"
+
+        assert first._create_lock_file_exclusive()
+        assert not second._create_lock_file_exclusive()
+
+    def test_concurrent_exclusive_create_has_one_winner(self):
+        lock_path = f"memory://arcflow-race-{uuid.uuid4().hex}"
+        locks = [
+            JobLock(job_id="race", lock_path=lock_path)
+            for _ in range(8)
+        ]
+        results = []
+        barrier = threading.Barrier(len(locks))
+
+        def contend(lock):
+            barrier.wait()
+            results.append(lock._create_lock_file_exclusive())
+
+        threads = [
+            threading.Thread(target=contend, args=(lock,))
+            for lock in locks
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert results.count(True) == 1
+        assert results.count(False) == len(locks) - 1
+
+    def test_unsupported_protocol_fails_clearly(self):
+        with patch(
+            "arcflow.lock.fsspec.core.url_to_fs",
+            side_effect=ValueError("Protocol not known: abfss"),
+        ):
+            with pytest.raises(ValueError, match="Unsupported job lock path"):
+                JobLock(
+                    job_id="remote",
+                    lock_path="abfss://workspace@host/lakehouse/Files/locks",
+                )
+
+    def test_abfss_path_uses_fsspec_normalized_path(self):
+        memory_fs = JobLock(
+            job_id="seed",
+            lock_path=f"memory://seed-{uuid.uuid4().hex}",
+        )._fs
+        remote_path = (
+            "abfss://workspace@onelake.dfs.fabric.microsoft.com/"
+            "lakehouse/Files/job_locks"
+        )
+        normalized = (
+            "workspace@onelake.dfs.fabric.microsoft.com/"
+            "lakehouse/Files/job_locks"
+        )
+
+        with patch(
+            "arcflow.lock.fsspec.core.url_to_fs",
+            return_value=(memory_fs, normalized),
+        ):
+            lock = JobLock(job_id="remote", lock_path=remote_path)
+
+        assert lock._fs_lock_file == f"{normalized}/remote.lock"
+        assert lock._lock_file == f"{remote_path}/remote.lock"
+
+    def test_azure_lock_acquires_and_releases_finite_lease(self):
+        filesystem = MagicMock()
+        filesystem.protocol = ("abfs", "az", "abfss")
+        filesystem._strip_protocol.return_value = "workspace/lakehouse/locks"
+        filesystem.split_path.return_value = (
+            "workspace", "lakehouse/locks/remote.lock", None
+        )
+        filesystem.glob.return_value = []
+        blob_client = MagicMock()
+        lease = MagicMock()
+        blob_client.acquire_lease.return_value = lease
+        filesystem.service_client.get_blob_client.return_value = blob_client
+        lock = JobLock(
+            job_id="remote",
+            lock_path="abfss://workspace@host/lakehouse/locks",
+            lease_duration_seconds=15,
+            lease_renew_interval=5,
+            filesystem=filesystem,
+        )
+
+        with patch("arcflow.lock.sync", side_effect=lambda loop, fn, *a, **kw: fn(*a, **kw)):
+            lock.acquire()
+            assert lock.held
+            blob_client.acquire_lease.assert_called_once_with(
+                lease_duration=15
+            )
+            blob_client.upload_blob.assert_called_once()
+            lock.release()
+
+        lease.release.assert_called_once()
+        filesystem.rm.assert_not_called()
+
+    def test_azure_lease_timeout_raises_job_lock_error(self):
+        class LeaseConflict(Exception):
+            status_code = 409
+            error_code = "LeaseAlreadyPresent"
+
+        filesystem = MagicMock()
+        filesystem.protocol = ("abfs", "az", "abfss")
+        filesystem._strip_protocol.return_value = "workspace/lakehouse/locks"
+        filesystem.split_path.return_value = (
+            "workspace", "lakehouse/locks/remote.lock", None
+        )
+        blob_client = MagicMock()
+        blob_client.acquire_lease.side_effect = LeaseConflict()
+        filesystem.service_client.get_blob_client.return_value = blob_client
+        lock = JobLock(
+            job_id="remote",
+            lock_path="abfss://workspace@host/lakehouse/locks",
+            timeout_seconds=0.02,
+            poll_interval=0.005,
+            lease_duration_seconds=15,
+            lease_renew_interval=5,
+            filesystem=filesystem,
+        )
+
+        with (
+            patch("arcflow.lock._AZURE_HTTP_ERRORS", (LeaseConflict,)),
+            patch("arcflow.lock.sync", side_effect=lambda loop, fn, *a, **kw: fn(*a, **kw)),
+            pytest.raises(JobLockError, match="lease remained held"),
+        ):
+            lock.acquire()
+
+    def test_azure_lease_is_renewed(self):
+        filesystem = MagicMock()
+        filesystem.protocol = ("abfs", "az", "abfss")
+        filesystem._strip_protocol.return_value = "workspace/lakehouse/locks"
+        filesystem.split_path.return_value = (
+            "workspace", "lakehouse/locks/remote.lock", None
+        )
+        filesystem.glob.return_value = []
+        blob_client = MagicMock()
+        lease = MagicMock()
+        renewed = threading.Event()
+        lease.renew.side_effect = renewed.set
+        blob_client.acquire_lease.return_value = lease
+        filesystem.service_client.get_blob_client.return_value = blob_client
+        lock = JobLock(
+            job_id="remote",
+            lock_path="abfss://workspace@host/lakehouse/locks",
+            lease_duration_seconds=15,
+            lease_renew_interval=0.01,
+            filesystem=filesystem,
+        )
+
+        with patch("arcflow.lock.sync", side_effect=lambda loop, fn, *a, **kw: fn(*a, **kw)):
+            lock.acquire()
+            assert renewed.wait(timeout=1)
+            lock.release()
+
+        lease.renew.assert_called()
+
+    def test_release_does_not_delete_new_owner(self, make_lock):
+        lock = make_lock()
+        lock.acquire()
+
+        replacement = {
+            "job_id": lock.job_id,
+            "acquired_at": datetime.now(timezone.utc).isoformat(),
+            "timeout_seconds": 60,
+            "instance_id": "replacement-owner",
+            "hostname": "other-host",
+            "pid": 99,
+        }
+        with lock._fs.open(lock._fs_lock_file, "w") as f:
+            json.dump(replacement, f)
+
+        lock.release()
+
+        assert lock.is_locked
+        with lock._fs.open(lock._fs_lock_file, "r") as f:
+            assert json.load(f)["instance_id"] == "replacement-owner"
+        lock._delete_lock_file()
 
     def test_same_instance_reentry(self, make_lock, lock_dir):
         """A new lock in the same process should take over without waiting."""
@@ -259,8 +445,8 @@ class TestStaleLockRecovery:
 # ---------------------------------------------------------------------------
 
 class TestHeartbeat:
-    def test_heartbeat_refreshes_acquired_at(self, lock_dir):
-        """Heartbeat should update acquired_at in the lock file."""
+    def test_heartbeat_refreshes_sidecar(self, lock_dir):
+        """Heartbeat should update its sidecar without rewriting ownership."""
         lock = JobLock(
             job_id="hb-test", lock_path=lock_dir,
             timeout_seconds=60, heartbeat_interval=1,
@@ -269,14 +455,19 @@ class TestHeartbeat:
 
         lock_file = os.path.join(lock_dir, "hb-test.lock")
         with open(lock_file) as f:
-            t1 = json.load(f)["acquired_at"]
+            acquired_at = json.load(f)["acquired_at"]
+        heartbeat_file = lock._heartbeat_file(lock.get_instance_id())
+        with open(heartbeat_file) as f:
+            t1 = json.load(f)["heartbeat_at"]
 
         time.sleep(1.5)  # wait for at least one heartbeat
 
         with open(lock_file) as f:
-            t2 = json.load(f)["acquired_at"]
+            assert json.load(f)["acquired_at"] == acquired_at
+        with open(heartbeat_file) as f:
+            t2 = json.load(f)["heartbeat_at"]
 
-        assert t2 > t1, "Heartbeat should have refreshed acquired_at"
+        assert t2 > t1, "Heartbeat should have refreshed its sidecar"
         lock.release()
 
     def test_heartbeat_stops_on_release(self, lock_dir):
@@ -303,21 +494,11 @@ class TestHeartbeat:
         # Wait longer than timeout_seconds — heartbeat keeps it fresh
         time.sleep(4)
 
-        # Verify acquired_at was refreshed by the heartbeat. Retry read in
-        # case we catch the file mid-write.
+        # Verify the heartbeat sidecar keeps the immutable lock fresh.
         lock_file = os.path.join(lock_dir, "hb-stale.lock")
-        for _ in range(3):
-            try:
-                with open(lock_file) as f:
-                    data = json.load(f)
-                break
-            except json.JSONDecodeError:
-                time.sleep(0.2)
-
-        acquired_at = datetime.fromisoformat(data["acquired_at"])
-        age = (datetime.now(timezone.utc) - acquired_at).total_seconds()
-        # Heartbeat should have kept acquired_at within ~1-2s
-        assert age < 3, f"Heartbeat failed: lock age is {age}s (should be <3s)"
+        with open(lock_file) as f:
+            data = json.load(f)
+        assert not holder._is_stale(data)
 
         holder.release()
 
@@ -373,6 +554,8 @@ class TestConfigIntegration:
         assert config["job_id"] is None
         assert config["job_lock_poll_interval"] is None
         assert config["job_lock_heartbeat_interval"] is None
+        assert config["job_lock_lease_duration_seconds"] == 60
+        assert config["job_lock_lease_renew_interval"] == 20
 
     def test_config_merges_lock_settings(self):
         from arcflow.config import get_config
@@ -430,6 +613,27 @@ class TestControllerIntegration:
         lock.release()
         assert not lock.held
 
+    def test_lock_timeout_propagates_and_prevents_pipeline_start(self):
+        from arcflow.config import get_config
+        from arcflow.controller import Controller
+
+        spark = MagicMock()
+        config = get_config({
+            "streaming_enabled": True,
+            "autoset_spark_configs": False,
+        })
+        controller = Controller(spark, config, {})
+        controller._job_lock = MagicMock()
+        controller._job_lock.acquire.side_effect = JobLockError(
+            "lease remained held"
+        )
+        controller._run_event_driven_pipeline = MagicMock()
+
+        with pytest.raises(JobLockError, match="lease remained held"):
+            controller.run_full_pipeline()
+
+        controller._run_event_driven_pipeline.assert_not_called()
+
     def test_lock_prevents_different_instance(self, lock_dir):
         """Two different processes (different instance_ids) with same job_id should conflict."""
         # Write a lock file as if from a foreign process
@@ -465,6 +669,120 @@ class TestControllerIntegration:
         assert lock2.held
 
         lock2.release()
+
+    def test_zone_lock_releases_after_stream_terminates(self, lock_dir):
+        from arcflow.config import get_config
+        from arcflow.controller import Controller
+
+        spark = MagicMock()
+        spark.streams.active = []
+        config = get_config({
+            "streaming_enabled": True,
+            "autoset_spark_configs": False,
+            "job_id": "zone-monitor",
+            "job_lock_enabled": True,
+            "job_lock_path": lock_dir,
+        })
+        controller = Controller(spark, config, {})
+
+        allow_termination = threading.Event()
+        query = MagicMock()
+        query.name = "bronze_orders_stream"
+        query.isActive = True
+
+        def await_termination():
+            allow_termination.wait(timeout=2)
+            query.isActive = False
+
+        query.awaitTermination.side_effect = await_termination
+
+        def start_query(*args, **kwargs):
+            controller.stream_manager.register(query, zone="bronze")
+            return [query]
+
+        controller._run_zone_pipeline_inner = MagicMock(
+            side_effect=start_query
+        )
+
+        controller.run_zone_pipeline("bronze")
+        assert controller._job_lock.held
+        assert controller._job_lock.is_locked
+
+        allow_termination.set()
+        controller._lock_monitor_thread.join(timeout=2)
+
+        assert not controller._job_lock.held
+        assert not controller._job_lock.is_locked
+
+    def test_full_pipeline_lock_waits_for_chain_idle(self, lock_dir):
+        from arcflow.config import get_config
+        from arcflow.controller import Controller
+
+        spark = MagicMock()
+        config = get_config({
+            "streaming_enabled": True,
+            "autoset_spark_configs": False,
+            "job_id": "chain-monitor",
+            "job_lock_enabled": True,
+            "job_lock_path": lock_dir,
+        })
+        controller = Controller(spark, config, {})
+        controller._job_lock.acquire()
+        controller._lock_held_by_full_pipeline = True
+
+        chain_idle = threading.Event()
+        listener = MagicMock()
+        listener.wait_until_idle.side_effect = (
+            lambda timeout=None: chain_idle.wait(timeout=timeout)
+        )
+        controller._chain_listener = listener
+
+        controller._start_lock_release_monitor()
+        time.sleep(0.05)
+        assert controller._job_lock.held
+
+        chain_idle.set()
+        controller._lock_monitor_thread.join(timeout=2)
+
+        assert not controller._job_lock.held
+        assert not controller._job_lock.is_locked
+
+    def test_stale_monitor_cannot_release_restarted_lock(self, lock_dir):
+        from arcflow.config import get_config
+        from arcflow.controller import Controller
+
+        spark = MagicMock()
+        config = get_config({
+            "streaming_enabled": True,
+            "autoset_spark_configs": False,
+            "job_id": "monitor-generation",
+            "job_lock_enabled": True,
+            "job_lock_path": lock_dir,
+        })
+        controller = Controller(spark, config, {})
+        old_monitor_idle = threading.Event()
+        old_listener = MagicMock()
+        old_listener.wait_until_idle.side_effect = (
+            lambda timeout=None: old_monitor_idle.wait(timeout=timeout)
+        )
+
+        controller._job_lock.acquire()
+        controller._chain_listener = old_listener
+        controller._start_lock_release_monitor()
+        old_generation = controller._lock_monitor_generation
+
+        controller._lock_monitor_generation += 1
+        controller._lock_monitor_stop.set()
+        controller._job_lock.release()
+        controller._job_lock.acquire()
+
+        old_monitor_idle.set()
+        time.sleep(0.1)
+
+        assert controller._lock_monitor_generation != old_generation
+        assert controller._job_lock.held
+        assert controller._job_lock.is_locked
+        controller._job_lock.release()
 
 
 # ---------------------------------------------------------------------------

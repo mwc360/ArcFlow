@@ -67,6 +67,8 @@ class Defaults:
     JOB_LOCK_TIMEOUT_SECONDS: int = 3600        # Wait timeout before failing (1 hour)
     JOB_LOCK_POLL_INTERVAL: int = None          # Seconds between retry checks (default: timeout_seconds // 10, min 5)
     JOB_LOCK_HEARTBEAT_INTERVAL: int = None     # Heartbeat refresh interval (default: timeout_seconds // 3, min 10)
+    JOB_LOCK_LEASE_DURATION_SECONDS: int = 60   # OneLake finite blob lease duration (15-60 seconds)
+    JOB_LOCK_LEASE_RENEW_INTERVAL: int = 20     # Seconds between OneLake lease renewals
     
     @classmethod
     def get_default_config(cls) -> Dict[str, Any]:
@@ -109,6 +111,8 @@ class Defaults:
             'job_lock_timeout_seconds': cls.JOB_LOCK_TIMEOUT_SECONDS,
             'job_lock_poll_interval': cls.JOB_LOCK_POLL_INTERVAL,
             'job_lock_heartbeat_interval': cls.JOB_LOCK_HEARTBEAT_INTERVAL,
+            'job_lock_lease_duration_seconds': cls.JOB_LOCK_LEASE_DURATION_SECONDS,
+            'job_lock_lease_renew_interval': cls.JOB_LOCK_LEASE_RENEW_INTERVAL,
         }
     
     @classmethod
