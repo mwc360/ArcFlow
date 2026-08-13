@@ -124,6 +124,82 @@ class TestApplyUpstreamTransforms:
         assert result is mock_df
 
 
+# ── streaming memory preview lifecycle ──────────────────────────────
+
+
+class TestStreamToMemory:
+    def _run_preview(self, active_queries=None):
+        spark = MagicMock()
+        spark.streams.active = active_queries or []
+        query = MagicMock()
+        query.isActive = False
+        writer = MagicMock()
+        writer.format.return_value = writer
+        writer.queryName.return_value = writer
+        writer.trigger.return_value = writer
+        writer.start.return_value = query
+        streaming_df = MagicMock()
+        streaming_df.writeStream = writer
+
+        pipeline = ZonePipeline(spark, zone="bronze", config=_CONFIG)
+        pipeline._stream_to_memory(
+            streaming_df,
+            "_arcflow_test_item",
+            limit=10,
+            timeout_seconds=5,
+        )
+        return spark, query
+
+    def test_repeat_run_stops_prior_query_and_replaces_view(self):
+        existing_query = MagicMock()
+        existing_query.name = "_arcflow_test_item"
+        existing_query.isActive = True
+
+        spark, _ = self._run_preview(active_queries=[existing_query])
+
+        existing_query.stop.assert_called_once_with()
+        spark.catalog.dropTempView.assert_called_once_with("_arcflow_test_item")
+
+    def test_repeat_run_leaves_other_queries_running(self):
+        existing_query = MagicMock()
+        existing_query.name = "_arcflow_test_other"
+        existing_query.isActive = True
+
+        self._run_preview(active_queries=[existing_query])
+
+        existing_query.stop.assert_not_called()
+
+    def test_stops_as_soon_as_limit_rows_are_collected(self):
+        spark = MagicMock()
+        spark.streams.active = []
+        count_result = MagicMock()
+        count_result.first.return_value.__getitem__.return_value = 10
+        preview_result = MagicMock()
+        spark.sql.side_effect = [count_result, preview_result]
+
+        query = MagicMock()
+        query.isActive = True
+        writer = MagicMock()
+        writer.format.return_value = writer
+        writer.queryName.return_value = writer
+        writer.trigger.return_value = writer
+        writer.start.return_value = query
+        streaming_df = MagicMock()
+        streaming_df.writeStream = writer
+
+        pipeline = ZonePipeline(spark, zone="bronze", config=_CONFIG)
+        result = pipeline._stream_to_memory(
+            streaming_df,
+            "_arcflow_test_item",
+            limit=10,
+            timeout_seconds=60,
+        )
+
+        query.stop.assert_called_once_with()
+        query.awaitTermination.assert_not_called()
+        assert result is preview_result
+
+
 # ── test_input chaining ─────────────────────────────────────────────
 
 

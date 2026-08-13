@@ -5,6 +5,7 @@ Replaces separate BronzePipeline, SilverPipeline, GoldPipeline with one flexible
 """
 import logging
 import threading
+import time
 from typing import List, Optional, Tuple
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.streaming import StreamingQuery
@@ -281,19 +282,28 @@ class ZonePipeline:
         """
         Write a streaming DataFrame to a Spark memory sink and return a batch result.
 
-        Uses ``trigger(availableNow=True)`` — reads all backlogged messages then stops
-        automatically. No checkpoint is required (memory sink is stateless).
+        Uses ``trigger(availableNow=True)`` and stops once ``limit`` rows have been
+        collected or all available data has been processed. No checkpoint is required
+        (memory sink is stateless).
         The in-memory view persists in the Spark session for follow-up ad-hoc SQL queries.
 
         Args:
             streaming_df: Streaming DataFrame to materialise.
             view_name: Name of the in-memory temp view (prefixed with _arcflow_).
             limit: Maximum rows to return.
-            timeout_seconds: Safety-net timeout for awaitTermination.
+            timeout_seconds: Maximum time to wait for preview rows.
 
         Returns:
             Batch DataFrame with at most ``limit`` rows.
         """
+        for active_query in self.spark.streams.active:
+            if active_query.name == view_name and active_query.isActive:
+                active_query.stop()
+
+        # Memory sink views persist after their query terminates. Recreate the view
+        # so repeated notebook calls return only the latest preview rows.
+        self.spark.catalog.dropTempView(view_name)
+
         query = (
             streaming_df.writeStream
             .format('memory')
@@ -301,7 +311,27 @@ class ZonePipeline:
             .trigger(availableNow=True)
             .start()
         )
-        query.awaitTermination(timeout=timeout_seconds)
+
+        deadline = time.monotonic() + timeout_seconds
+        while query.isActive:
+            row_count = self.spark.sql(
+                f"SELECT COUNT(*) AS row_count FROM {view_name}"
+            ).first()[0]
+            if row_count >= limit:
+                query.stop()
+                break
+
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                self.logger.warning(
+                    f"Test query '{view_name}' reached its {timeout_seconds}-second timeout; "
+                    "stopping it and returning the rows collected so far."
+                )
+                query.stop()
+                break
+
+            query.awaitTermination(timeout=min(0.25, remaining_seconds))
+
         self.logger.info(
             f"Memory view '{view_name}' ready — "
             f"run spark.sql(\"SELECT * FROM {view_name}\") for further queries."
