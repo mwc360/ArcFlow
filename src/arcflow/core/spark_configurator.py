@@ -146,7 +146,7 @@ class SparkConfigurator:
             except Exception:
                 pass  # Not available in this environment — silently skip
 
-        logger.info(
+        logger.debug(
             f"[SparkConfigurator] applied={len(applied)}, "
             f"skipped={len(skipped)}, unset={len(unset)}, failed={len(failed)}"
         )

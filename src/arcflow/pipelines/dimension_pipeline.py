@@ -54,7 +54,7 @@ class DimensionPipeline:
         self.is_streaming = config.get('streaming_enabled', True)
         self.logger = logging.getLogger(__name__)
         
-        self.logger.info(
+        self.logger.debug(
             f"Initialized dimension pipeline for {zone} "
             f"(streaming: {self.is_streaming})"
         )
@@ -74,7 +74,7 @@ class DimensionPipeline:
         Returns:
             Dict of table_name -> DataFrame
         """
-        self.logger.info(
+        self.logger.debug(
             f"Reading {len(dimension_config.source_tables)} source tables "
             f"for {dimension_config.name}"
         )
@@ -89,7 +89,7 @@ class DimensionPipeline:
             schema_name = self.config.get('schema_name', source_zone)
             table_ref = build_table_reference(catalog_name, schema_name, table_name)
             
-            self.logger.info(f"Reading {table_name} from {source_zone} using reference: {table_ref}")
+            self.logger.debug(f"Reading {table_name} from {source_zone} using reference: {table_ref}")
             
             # Read as stream or batch based on mode
             if self.is_streaming:
@@ -126,7 +126,7 @@ class DimensionPipeline:
                 f"Available: {list(dimension_config.available_builders())}"
             )
         
-        self.logger.info(f"Applying dimension builder: {builder_name}")
+        self.logger.debug(f"Applying dimension builder: {builder_name}")
         builder = get_dimension_transformer(builder_name)
         
         # Call builder with source tables and config
@@ -188,33 +188,28 @@ class DimensionPipeline:
             StreamingQuery if streaming, None if batch
         """
         if not dimension_config.enabled:
-            self.logger.info(f"Dimension {dimension_config.name} not enabled")
+            self.logger.debug(f"Dimension {dimension_config.name} not enabled")
             return None
         
-        self.logger.info(f"Processing dimension: {dimension_config.name}")
+        self.logger.debug(f"Processing dimension: {dimension_config.name}")
         
-        try:
-            # Read source tables
-            source_tables = self.read_source_tables_for_dimension(
-                dimension_config,
-                table_registry
-            )
-            
-            # Apply dimension builder (joins, aggregations, etc.)
-            df = self.apply_dimension_builder(source_tables, dimension_config)
-            
-            # Add metadata
-            df = self.apply_metadata(df, dimension_config)
-            
-            # Write
-            query = self.write_dimension(df, dimension_config)
-            
-            self.logger.info(f"Successfully set up dimension pipeline for {dimension_config.name}")
-            return query
-            
-        except Exception as e:
-            self.logger.error(f"Failed to process dimension {dimension_config.name}: {e}")
-            raise
+        # Read source tables
+        source_tables = self.read_source_tables_for_dimension(
+            dimension_config,
+            table_registry
+        )
+
+        # Apply dimension builder (joins, aggregations, etc.)
+        df = self.apply_dimension_builder(source_tables, dimension_config)
+
+        # Add metadata
+        df = self.apply_metadata(df, dimension_config)
+
+        # Write
+        query = self.write_dimension(df, dimension_config)
+
+        self.logger.debug(f"Successfully set up dimension pipeline for {dimension_config.name}")
+        return query
     
     def process_all(
         self,

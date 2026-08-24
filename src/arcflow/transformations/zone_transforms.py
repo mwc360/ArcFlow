@@ -113,7 +113,7 @@ def register_zone_transformer(name_or_func=None, func=None):
             logger.warning(f"Overwriting existing transformer: {name}")
         
         ZONE_TRANSFORMERS[name] = transform_func
-        logger.info(f"Registered zone transformer: {name}")
+        logger.debug(f"Registered zone transformer: {name}")
         return transform_func
     
     # Case 1: Used as @register_zone_transformer('name')

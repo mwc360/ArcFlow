@@ -125,25 +125,20 @@ def get_table_registry() -> Dict[str, FlowConfig]:
 
 def main():
     """Main execution function"""
-    logger.info("=" * 80)
     logger.info("Starting ArcFlow ELT Framework")
-    logger.info("=" * 80)
     
     try:
         # 1. Create Spark session with Delta optimizations
-        logger.info("Creating Spark session...")
         spark = create_spark_session(app_name="ArcFlowELT")
-        logger.info(f"Spark version: {spark.version}")
         
         # 2. Load configuration
-        logger.info("Loading configuration...")
+        logger.debug("Loading configuration")
         config = get_pipeline_config()
         table_registry = get_table_registry()
         
-        logger.info(f"Loaded {len(table_registry)} tables")
+        logger.debug(f"Loaded {len(table_registry)} tables")
         
         # 3. Initialize orchestrator
-        logger.info("Initializing orchestrator...")
         orchestrator = Controller(
             spark=spark,
             config=config,
@@ -151,21 +146,18 @@ def main():
         )
         
         # 4. Run full pipeline
-        logger.info("Starting full ELT pipeline...")
         orchestrator.run_full_pipeline(
             zones=['bronze', 'silver', 'gold'],
         )
         
-        logger.info("=" * 80)
         logger.info("ArcFlow ELT Framework completed successfully")
-        logger.info("=" * 80)
         
     except KeyboardInterrupt:
         logger.info("Received interrupt signal, shutting down gracefully...")
         if 'orchestrator' in locals():
             orchestrator.stop_all()
-    except Exception as e:
-        logger.error(f"Pipeline failed with error: {e}", exc_info=True)
+    except Exception:
+        logger.exception("Pipeline failed")
         sys.exit(1)
 
 

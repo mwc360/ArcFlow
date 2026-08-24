@@ -246,7 +246,7 @@ class StageChainListener(StreamingQueryListener):
             if needs_initial_cascade:
                 with self._lock:
                     self._initial_cascade_done.add(key)
-                self.logger.info(
+                self.logger.debug(
                     f"StageChainListener: first-batch cascade "
                     f"{zone}.{table_name} → {downstream_zone}.{table_name}"
                 )
@@ -323,7 +323,7 @@ class StageChainListener(StreamingQueryListener):
                     action = 'spawn_downstream'
                     target_zone = next_zone
 
-        self.logger.info(
+        self.logger.debug(
             f"StageChainListener: {zone}.{table_name} terminated"
             + (f" → {action} {target_zone}.{table_name}" if action else "")
         )
@@ -361,7 +361,7 @@ class StageChainListener(StreamingQueryListener):
         if needs_initial_cascade:
             with self._lock:
                 self._initial_cascade_done.add(key)
-            self.logger.info(
+            self.logger.debug(
                 f"StageChainListener: first-batch cascade "
                 f"{zone}.{table_name} → {downstream_zone}.{table_name}"
             )
@@ -385,7 +385,7 @@ class StageChainListener(StreamingQueryListener):
         with self._lock:
             if key in self._active_downstream_tables:
                 self._pending_retrigger_tables.add(key)
-                self.logger.info(
+                self.logger.debug(
                     f"StageChainListener: {zone}.{table_name} already active, "
                     f"marking pending retrigger"
                 )
@@ -394,7 +394,7 @@ class StageChainListener(StreamingQueryListener):
             self._pending_spawn_count += 1
             self._idle_event.clear()
 
-        self.logger.info(
+        self.logger.debug(
             f"StageChainListener: spawning {zone}.{table_name} as availableNow"
         )
         future = self._executor.submit(self._do_spawn, zone, table_name)

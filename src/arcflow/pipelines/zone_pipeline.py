@@ -67,7 +67,7 @@ class ZonePipeline:
         self.is_streaming = config.get('streaming_enabled', True)
         self.logger = logging.getLogger(__name__)
         
-        self.logger.info(
+        self.logger.debug(
             f"Initialized {zone} pipeline (streaming: {self.is_streaming})"
         )
 
@@ -180,7 +180,7 @@ class ZonePipeline:
 
         if source_zone:
             # Read from previous zone (e.g., silver reads from bronze)
-            self.logger.info(f"Reading {table_config.name} from {source_zone} zone")
+            self.logger.debug(f"Reading {table_config.name} from {source_zone} zone")
             
             if self.is_streaming:
                 df = self.spark.readStream.format('delta').table(table_reference)
@@ -188,7 +188,7 @@ class ZonePipeline:
                 df = self.spark.read.format('delta').table(table_reference)
         else:
             # Read from landing (raw files)
-            self.logger.info(f"Reading {table_config.name} from landing")
+            self.logger.debug(f"Reading {table_config.name} from landing")
             reader_factory = ReaderFactory(self.spark, self.is_streaming, self.config)
             reader = reader_factory.create_reader(table_config)
             df = reader.read(table_config)
@@ -218,7 +218,7 @@ class ZonePipeline:
         # Custom table-specific, zone-specific transformations
         if zone_config.custom_transform:
             if has_zone_transformer(zone_config.custom_transform):
-                self.logger.info(f"Applying custom transformation: {zone_config.custom_transform}")
+                self.logger.debug(f"Applying custom transformation: {zone_config.custom_transform}")
                 transformer = get_zone_transformer(zone_config.custom_transform)
                 df = transformer(df)
             else:
@@ -228,7 +228,7 @@ class ZonePipeline:
                 )
 
         # Universal transformations for all zones
-        self.logger.info("Applying snake_case normalization")
+        self.logger.debug("Applying snake_case normalization")
         df = normalize_columns_to_snake_case(df)
         
         # Add zone metadata
@@ -268,7 +268,7 @@ class ZonePipeline:
         for zone_name in self._get_upstream_zones(table_config):
             zone_config = table_config.get_zone_config(zone_name)
             if zone_config and zone_config.enabled:
-                self.logger.info(f"Chaining upstream transforms for {zone_name}")
+                self.logger.debug(f"Chaining upstream transforms for {zone_name}")
                 df = self.apply_transformations(df, table_config, zone_config)
         return df
 
@@ -371,7 +371,7 @@ class ZonePipeline:
         """
         zone_config = table_config.get_zone_config(self.zone)
         if not zone_config:
-            self.logger.info(f"Table {table_config.name} not configured for {self.zone} zone")
+            self.logger.debug(f"Table {table_config.name} not configured for {self.zone} zone")
             return None
 
         self.logger.info(f"Testing {table_config.name} input for {self.zone} zone")
@@ -383,13 +383,9 @@ class ZonePipeline:
                     f"Endpoint validation failed for '{table_config.name}': {validation.error}"
                 )
             reader = ReaderFactory(self.spark, True, self.config).create_reader(table_config)
-            try:
-                streaming_df = reader.read(table_config, raw=raw, max_records=limit)
-                if not raw:
-                    streaming_df = self._apply_upstream_transforms(streaming_df, table_config)
-            except Exception as e:
-                self.logger.error(f"Failed to read {table_config.name}: {e}")
-                raise
+            streaming_df = reader.read(table_config, raw=raw, max_records=limit)
+            if not raw:
+                streaming_df = self._apply_upstream_transforms(streaming_df, table_config)
             view_name = f"_arcflow_test_{table_config.name}"
             return self._stream_to_memory(streaming_df, view_name, limit, timeout_seconds)
 
@@ -401,8 +397,8 @@ class ZonePipeline:
             df = self._apply_upstream_transforms(df, table_config)
             self.logger.info(f"Successfully generated test input for {table_config.name}")
             return df.limit(limit)
-        except Exception as e:
-            self.logger.error(f"Failed to test {table_config.name} input: {e}")
+        except Exception:
+            self.logger.exception(f"Failed to test {table_config.name} input")
             raise
         finally:
             self.is_streaming = original_streaming
@@ -436,7 +432,7 @@ class ZonePipeline:
         """
         zone_config = table_config.get_zone_config(self.zone)
         if not zone_config:
-            self.logger.info(f"Table {table_config.name} not configured for {self.zone} zone")
+            self.logger.debug(f"Table {table_config.name} not configured for {self.zone} zone")
             return None
 
         self.logger.info(f"Testing {table_config.name} output for {self.zone} zone")
@@ -448,13 +444,9 @@ class ZonePipeline:
                     f"Endpoint validation failed for '{table_config.name}': {validation.error}"
                 )
             reader = ReaderFactory(self.spark, True, self.config).create_reader(table_config)
-            try:
-                streaming_df = reader.read(table_config, raw=False, max_records=limit)
-                streaming_df = self._apply_upstream_transforms(streaming_df, table_config)
-                streaming_df = self.apply_transformations(streaming_df, table_config, zone_config)
-            except Exception as e:
-                self.logger.error(f"Failed to build pipeline for {table_config.name}: {e}")
-                raise
+            streaming_df = reader.read(table_config, raw=False, max_records=limit)
+            streaming_df = self._apply_upstream_transforms(streaming_df, table_config)
+            streaming_df = self.apply_transformations(streaming_df, table_config, zone_config)
             view_name = f"_arcflow_test_out_{table_config.name}"
             return self._stream_to_memory(streaming_df, view_name, limit, timeout_seconds)
 
@@ -467,8 +459,8 @@ class ZonePipeline:
             df = self.apply_transformations(df, table_config, zone_config)
             self.logger.info(f"Successfully generated test output for {table_config.name}")
             return df.limit(limit)
-        except Exception as e:
-            self.logger.error(f"Failed to test {table_config.name} output: {e}")
+        except Exception:
+            self.logger.exception(f"Failed to test {table_config.name} output")
             raise
         finally:
             self.is_streaming = original_streaming
@@ -546,17 +538,17 @@ class ZonePipeline:
         # Get zone-specific configuration
         zone_config = table_config.get_zone_config(self.zone)
         if not zone_config or not zone_config.enabled:
-            self.logger.info(f"Table {table_config.name} not enabled for {self.zone} zone")
+            self.logger.debug(f"Table {table_config.name} not enabled for {self.zone} zone")
             return None
 
         query_name = f"{self.zone}_{table_config.name}_stream"
 
         # For streaming: atomic check-and-claim prevents duplicate readStream setup
         if self.is_streaming and not self._claim_query(query_name):
-            self.logger.info(f"⏭️  Query '{query_name}' is already active or pending, skipping")
+            self.logger.debug(f"⏭️  Query '{query_name}' is already active or pending, skipping")
             return None
 
-        self.logger.info(f"Processing {table_config.name} for {self.zone} zone")
+        self.logger.debug(f"Processing {table_config.name} for {self.zone} zone")
         
         try:
             # Read
@@ -567,13 +559,24 @@ class ZonePipeline:
             
             # Write
             query = self.write_target(df, table_config, zone_config)
-            
-            self.logger.info(f"Successfully set up pipeline for {table_config.name}")
+
+            if (
+                query is not None
+                and self._get_source_zone(table_config) is None
+                and table_config.trigger_mode == 'processingTime'
+            ):
+                interval = (
+                    table_config.trigger_interval
+                    or self.config.get('trigger_interval')
+                )
+                self.logger.info(
+                    f"Input stream started: {self.zone}.{table_config.name} "
+                    f"trigger=processingTime interval={interval}"
+                )
+
+            self.logger.debug(f"Successfully set up pipeline for {table_config.name}")
             return query
             
-        except Exception as e:
-            self.logger.error(f"Failed to process {table_config.name}: {e}")
-            raise
         finally:
             if self.is_streaming:
                 self._release_claim(query_name)
@@ -602,10 +605,10 @@ class ZonePipeline:
         query_name = f"{primary_name}_{t_name}_stream"
 
         if self.is_streaming and not self._claim_query(query_name):
-            self.logger.info(f"⏭️  Query '{query_name}' is already active or pending, skipping")
+            self.logger.debug(f"⏭️  Query '{query_name}' is already active or pending, skipping")
             return None
 
-        self.logger.info(
+        self.logger.debug(
             f"Processing multi-target group for {table_config.name}: {stage_names}"
         )
 
@@ -631,17 +634,26 @@ class ZonePipeline:
                 df, table_config, stages, self.zone, config
             )
 
-            self.logger.info(
+            if (
+                query is not None
+                and source_zone is None
+                and table_config.trigger_mode == 'processingTime'
+            ):
+                interval = (
+                    table_config.trigger_interval
+                    or self.config.get('trigger_interval')
+                )
+                self.logger.info(
+                    f"Input stream started: {self.zone}.{table_config.name} "
+                    f"trigger=processingTime interval={interval}"
+                )
+
+            self.logger.debug(
                 f"Successfully set up multi-target pipeline for "
                 f"{table_config.name} → {stage_names}"
             )
             return query
 
-        except Exception as e:
-            self.logger.error(
-                f"Failed to process multi-target group for {table_config.name}: {e}"
-            )
-            raise
         finally:
             if self.is_streaming:
                 self._release_claim(query_name)
@@ -674,7 +686,7 @@ class ZonePipeline:
                 if fail_fast:
                     raise
                 if recovery:
-                    self.logger.info(
+                    self.logger.debug(
                         f"Skipping {config.name} for {self.zone} zone — "
                         f"upstream not yet available, will be triggered by chain listener"
                     )

@@ -139,4 +139,4 @@ def register_dimension_transformer(
         logger.warning(f"Overwriting existing transformer: {name}")
     
     DIMENSION_TRANSFORMERS[name] = func
-    logger.info(f"Registered dimension transformer: {name}")
+    logger.debug(f"Registered dimension transformer: {name}")

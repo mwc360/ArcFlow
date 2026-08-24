@@ -183,7 +183,7 @@ class JobLock:
             # Same-instance re-entry covers notebook re-runs where a previous
             # Controller was not cleaned up.
             if self._is_same_instance(existing):
-                logger.info(
+                logger.debug(
                     f"Re-acquiring lock for job '{self.job_id}' "
                     f"(same instance_id={self.get_instance_id()!r})"
                 )

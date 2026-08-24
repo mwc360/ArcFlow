@@ -90,13 +90,13 @@ class Controller:
         if config.get('autoset_spark_configs', True):
             overrides = config.get('spark_config_overrides')
             result = SparkConfigurator.apply(spark, overrides=overrides)
-            self.logger.info(
+            self.logger.debug(
                 f"SparkConfigurator: {len(result['applied'])} configs applied, "
                 f"{len(result['skipped'])} already set, "
                 f"{len(result['unset'])} unset"
             )
 
-        self.logger.info("Initialized ArcFlowOrchestrator")
+        self.logger.debug("Initialized ArcFlowOrchestrator")
 
     # ── Stage-input resolution & grouping ───────────────────────────
 
@@ -225,8 +225,6 @@ class Controller:
                 StageChainListener before fast availableNow streams can
                 terminate.
         """
-        self.logger.info(f"Starting {zone} pipeline (source: {source_zone or 'landing'})")
-        
         # Filter tables
         if table_subset:
             configs = [self.table_registry[name] for name in table_subset]
@@ -236,19 +234,22 @@ class Controller:
                 if config.is_enabled_for_zone(zone)
             ]
         
-        self.logger.info(f"Processing {len(configs)} tables for {zone} zone")
+        self.logger.info(
+            f"Starting {zone} pipeline: source={source_zone or 'landing'}, "
+            f"tables={len(configs)}"
+        )
         
         # Log active streams before starting
         active_names = [q.name for q in self.spark.streams.active if q.isActive]
         if active_names:
-            self.logger.info(f"Currently active streams: {active_names}")
+            self.logger.debug(f"Currently active streams: {active_names}")
         
         queries: List[StreamingQuery] = []
 
         for table_config in configs:
             # Skip if this stage was already processed as part of a multi-target group
             if (table_config.name, zone) in self._processed_stages:
-                self.logger.info(
+                self.logger.debug(
                     f"⏭️  Stage '{zone}' for {table_config.name} already processed in group"
                 )
                 continue
@@ -315,7 +316,7 @@ class Controller:
         if started:
             self.logger.info(f"✅ Started {len(started)} streams for {zone}: {started}")
         if skipped:
-            self.logger.info(f"⏭️  Skipped {len(skipped)} already-active streams for {zone}: {skipped}")
+            self.logger.debug(f"⏭️  Skipped {len(skipped)} already-active streams for {zone}: {skipped}")
         if not started and not skipped:
             self.logger.info(f"No streams to start for {zone} zone")
         
@@ -336,8 +337,6 @@ class Controller:
         Returns:
             List of StreamingQuery instances
         """
-        self.logger.info(f"Starting dimension pipeline for {zone} zone")
-        
         # Initialize dimension pipeline
         pipeline = DimensionPipeline(
             spark=self.spark,
@@ -355,7 +354,9 @@ class Controller:
                 if config.enabled
             ]
         
-        self.logger.info(f"Processing {len(configs)} dimensions for {zone} zone")
+        self.logger.info(
+            f"Starting dimension pipeline: zone={zone}, dimensions={len(configs)}"
+        )
         
         # Process all dimensions
         queries = pipeline.process_all(configs, self.table_registry)
@@ -405,10 +406,14 @@ class Controller:
             self._lock_held_by_full_pipeline = True
 
         try:
-            self.logger.info(f"Starting full pipeline for zones: {zones}")
             self._processed_stages.clear()
             
             use_chaining = self.config.get('event_driven_chaining', True) and self.is_streaming
+            mode = 'event-driven' if use_chaining and len(zones) > 1 else 'sequential'
+            self.logger.info(
+                f"Starting ArcFlow pipeline: mode={mode}, zones={zones}, "
+                f"tables={len(self.table_registry)}"
+            )
 
             if use_chaining and len(zones) > 1:
                 self._run_event_driven_pipeline(zones, include_dimensions, await_termination)
@@ -461,7 +466,7 @@ class Controller:
         rows), so the full chain runs at least once — no separate recovery
         logic needed.
         """
-        self.logger.info(f"Starting event-driven pipeline: {' → '.join(zones)}")
+        self.logger.debug(f"Event-driven stage chain: {' → '.join(zones)}")
         
         # Build the listener with per-table spawn callback
         self._chain_listener = StageChainListener(
@@ -471,7 +476,7 @@ class Controller:
             spark=self.spark,
         )
         self.spark.streams.addListener(self._chain_listener)
-        self.logger.info("StageChainListener registered with SparkSession")
+        self.logger.debug("StageChainListener registered with SparkSession")
         
         # Start the first zone with its configured trigger.
         # Register each query with the listener immediately (via callback)
@@ -524,7 +529,7 @@ class Controller:
             config=self.config,
         )
 
-        self.logger.info(f"Spawning {zone}.{table_name} as availableNow")
+        self.logger.debug(f"Spawning {zone}.{table_name} as availableNow")
         query = pipeline.process_table(config)
         if query:
             self.stream_manager.register(query, zone=zone)
@@ -551,10 +556,10 @@ class Controller:
         ]
         
         if not configs:
-            self.logger.info(f"No tables enabled for {zone} zone")
+            self.logger.debug(f"No tables enabled for {zone} zone")
             return []
         
-        self.logger.info(f"Spawning {len(configs)} tables for {zone} zone (availableNow)")
+        self.logger.debug(f"Spawning {len(configs)} tables for {zone} zone (availableNow)")
         queries = pipeline.process_all(configs, recovery=recovery)
         
         for query in queries:
@@ -591,7 +596,7 @@ class Controller:
         
         if self.is_streaming and await_termination:
             self.logger.info("Awaiting streaming termination (blocking)...")
-            self.logger.info("Tip: Set await_termination=False for interactive notebooks")
+            self.logger.debug("Set await_termination=False for interactive notebooks")
             self.await_completion()
         elif self.is_streaming:
             self.logger.info("Streams started (non-blocking). Use controller.stream_manager.await_all() to wait for completion.")
@@ -640,7 +645,7 @@ class Controller:
             try:
                 self._chain_listener.shutdown(wait=False)
                 self.spark.streams.removeListener(self._chain_listener)
-                self.logger.info("StageChainListener removed")
+                self.logger.debug("StageChainListener removed")
             except Exception as e:
                 self.logger.warning(f"Failed to remove StageChainListener: {e}")
             self._chain_listener = None

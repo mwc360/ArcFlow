@@ -38,7 +38,7 @@ class StreamManager:
             self.queries.append(query)
             if zone is not None:
                 self._zone_queries.setdefault(zone, []).append(query)
-            self.logger.info(f"Registered query: {query.name}"
+            self.logger.debug(f"Registered query: {query.name}"
                            + (f" (zone={zone})" if zone else ""))
     
     def has_queries(self) -> bool:
@@ -57,7 +57,7 @@ class StreamManager:
                 del self._zone_queries[zone]
         pruned = before - len(self.queries)
         if pruned > 0:
-            self.logger.info(f"Pruned {pruned} terminated queries ({len(self.queries)} active)")
+            self.logger.debug(f"Pruned {pruned} terminated queries ({len(self.queries)} active)")
     
     def await_all(self, timeout: Optional[int] = None):
         """
@@ -67,18 +67,18 @@ class StreamManager:
             timeout: Optional timeout in seconds
         """
         if not self.has_queries():
-            self.logger.info("No streaming queries to await")
+            self.logger.debug("No streaming queries to await")
             return
         
-        self.logger.info(f"Awaiting {len(self.queries)} streaming queries...")
+        self.logger.debug(f"Awaiting {len(self.queries)} streaming queries...")
         
         for query in self.queries:
             try:
                 if timeout:
-                    self.logger.info(f"Waiting for {query.name} (timeout: {timeout}s)")
+                    self.logger.debug(f"Waiting for {query.name} (timeout: {timeout}s)")
                     query.awaitTermination(timeout)
                 else:
-                    self.logger.info(f"Waiting for {query.name}")
+                    self.logger.debug(f"Waiting for {query.name}")
                     query.awaitTermination()
             except Exception as e:
                 self.logger.error(f"Query {query.name} failed: {e}")
@@ -86,12 +86,12 @@ class StreamManager:
     
     def stop_all(self):
         """Stop all active queries gracefully and clear internal state"""
-        self.logger.info(f"Stopping {len(self.queries)} streaming queries...")
+        self.logger.debug(f"Stopping {len(self.queries)} streaming queries...")
         
         for query in self.queries:
             try:
                 if query.isActive:
-                    self.logger.info(f"Stopping query: {query.name}")
+                    self.logger.debug(f"Stopping query: {query.name}")
                     query.stop()
             except Exception as e:
                 self.logger.error(f"Error stopping {query.name}: {e}")

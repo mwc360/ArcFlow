@@ -53,7 +53,7 @@ class DeltaWriter(BaseWriter):
         Args:
             schema_name: Name of the schema to create
         """
-        self.logger.info(f"Creating schema {schema_name} if not exists")
+        self.logger.debug(f"Creating schema {schema_name} if not exists")
         self.spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_name}")
     
     def write(
@@ -87,7 +87,7 @@ class DeltaWriter(BaseWriter):
         # Create schema if it doesn't exist
         self.create_schema_if_not_exists(schema_name)
         
-        self.logger.info(f"Writing {table_name} to {table_reference} (mode: {zone_config.mode})")
+        self.logger.debug(f"Writing {table_name} to {table_reference} (mode: {zone_config.mode})")
         
         if self.is_streaming:
             return self._write_stream(df, table_config, zone_config, zone, table_reference)
@@ -111,7 +111,7 @@ class DeltaWriter(BaseWriter):
             # Skip if a query with this name is truly active in the SparkSession
             for active_query in self.spark.streams.active:
                 if active_query.name == query_name and active_query.isActive:
-                    self.logger.info(
+                    self.logger.debug(
                         f"⏭️  Query '{query_name}' is already active, skipping start"
                     )
                     return active_query
@@ -219,7 +219,7 @@ class DeltaWriter(BaseWriter):
                 .execute()
             )
             
-            self.logger.info(f"Merged batch to {table_reference}")
+            self.logger.debug(f"Merged batch to {table_reference}")
         else:
             # Table doesn't exist, create it
             batch_df.write.format('delta').saveAsTable(table_reference)
@@ -306,7 +306,7 @@ class DeltaWriter(BaseWriter):
             # Skip if already active
             for active_query in self.spark.streams.active:
                 if active_query.name == query_name and active_query.isActive:
-                    self.logger.info(f"⏭️  Query '{query_name}' is already active, skipping")
+                    self.logger.debug(f"⏭️  Query '{query_name}' is already active, skipping")
                     return active_query
 
             checkpoint_path = self.get_checkpoint_path(zone, f"{t_name}_multi")
@@ -329,7 +329,7 @@ class DeltaWriter(BaseWriter):
                             s_name, s_cfg, table_config_ref, s_name
                         )
                         writer_ref._write_single_target(target_df, s_cfg, ref)
-                        writer_ref.logger.info(f"  → wrote batch {batch_id} to {ref}")
+                        writer_ref.logger.debug(f"Wrote batch {batch_id} to {ref}")
                 finally:
                     if len(stages_snapshot) > 1:
                         batch_df.unpersist()
@@ -358,7 +358,7 @@ class DeltaWriter(BaseWriter):
             elif trigger_mode == 'continuous':
                 writer = writer.trigger(continuous=trigger_interval or '1 second')
 
-            self.logger.info(
+            self.logger.debug(
                 f"Starting multi-target query '{query_name}' → "
                 f"{[s[0] for s in stages]}"
             )
@@ -380,7 +380,7 @@ class DeltaWriter(BaseWriter):
                     stage_name, stage_config, table_config, stage_name
                 )
                 self._write_single_target(target_df, stage_config, ref)
-                self.logger.info(f"Wrote batch to {ref}")
+                self.logger.debug(f"Wrote batch to {ref}")
         finally:
             if len(stages) > 1:
                 df.unpersist()

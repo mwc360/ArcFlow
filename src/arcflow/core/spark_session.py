@@ -25,7 +25,7 @@ def create_spark_session(config: Dict[str, Any]) -> SparkSession:
     spark_configs = config.get('spark_configs', {})
     delta_configs = config.get('delta_configs', True)
     
-    logger.info(f"Creating Spark session: {app_name}")
+    logger.debug(f"Creating Spark session: {app_name}")
     
     # Start with builder
     builder = SparkSession.builder.appName(app_name)
@@ -45,7 +45,7 @@ def create_spark_session(config: Dict[str, Any]) -> SparkSession:
     spark = builder.getOrCreate()
     
     logger.info(f"Spark session created: {spark.version}")
-    logger.info(f"Delta Lake enabled: {delta_configs}")
+    logger.debug(f"Delta Lake enabled: {delta_configs}")
     
     return spark
 
